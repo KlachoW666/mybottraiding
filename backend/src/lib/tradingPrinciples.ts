@@ -1,9 +1,10 @@
 /**
  * Trading Principles — правила из книг:
- * 1. Schwager "Getting Started in Technical Analysis" (1999)
- * 2. Burniske & Tatar "Cryptoassets: The Innovative Investor's Guide to Bitcoin and Beyond" (2017)
- * 3. Antonopoulos "The Internet of Money" (2016)
- * 4. Swan "Blockchain: Blueprint for a New Economy" (2015)
+ * Психология: Douglas (Trading in the Zone, Disciplined Trader), Steenbarger (Psychology of Trading)
+ * ТА: Murphy (Technical Analysis), Nison (Japanese Candlestick), Schwager (Market Wizards, TA Course)
+ * Волатильность: Sinclair (Volatility Trading)
+ * Крипто: Burniske & Tatar (Cryptoassets), Antonopoulos (Internet of Money), Swan (Blockchain Blueprint)
+ * Алгоритмы: Chan (Algorithmic Trading)
  */
 
 /** Schwager: риск на сделку 1–2%, макс 3% на любую сделку */
@@ -81,3 +82,33 @@ export const VOLUME_BREAKOUT_MULTIPLIER = 1.2;  // объём при пробо�
 
 /** Burniske: диверсификация — не более X% в один актив */
 export const MAX_SINGLE_ASSET_PCT = 0.25;  // 25% макс на один актив
+
+/** Sinclair (Volatility Trading): при высокой волатильности — уменьшить размер позиции */
+export const VOLATILITY_REDUCTION_THRESHOLD = 1.5;  // ATR/avgATR > 1.5 = высокая волатильность
+export const VOLATILITY_SIZE_MULTIPLIER = 0.7;     // при высокой волатильности × 0.7
+
+/** Nison (Japanese Candles): на 24/7 крипто больше ложных пробоев — требуется объём */
+export const FALSE_BREAKOUT_VOLUME_MIN = 1.3;  // пробой без объёма > 1.3× avg = подозрительно
+
+/**
+ * Sinclair (Volatility Trading): множитель размера при высокой волатильности.
+ * Крипто: волатильность в 5–10× выше акций — уменьшаем риск при всплеске ATR.
+ */
+export function volatilitySizeMultiplier(atr: number | null, avgAtr: number | null): number {
+  if (!atr || !avgAtr || avgAtr <= 0) return 1;
+  if (atr / avgAtr > VOLATILITY_REDUCTION_THRESHOLD) return VOLATILITY_SIZE_MULTIPLIER;
+  return 1;
+}
+
+/**
+ * Nison: признак возможного ложного пробоя — пробой уровня без подтверждения объёмом.
+ * На 24/7 крипто: гэпов меньше, ложных пробоев больше.
+ */
+export function isPotentialFalseBreakout(
+  currentVolume: number,
+  avgVolume: number,
+  isBreakout: boolean
+): boolean {
+  if (!isBreakout || avgVolume <= 0) return false;
+  return currentVolume < avgVolume * FALSE_BREAKOUT_VOLUME_MIN;
+}

@@ -1,6 +1,7 @@
 import { TradingSignal } from '../types/signal';
 import { CandlePattern } from '../types/candle';
 import { ASYMMETRIC_RR_MIN, detectFailedSignalHint } from '../lib/tradingPrinciples';
+import { DEFAULT_TRAILING_CONFIG } from '../lib/trailingStop';
 
 /**
  * Signal Generator - генерация торговых сигналов (раздел 3.1, 6 ТЗ)
@@ -26,6 +27,8 @@ export class SignalGenerator {
     atr?: number;
     /** Schwager: направление цены для распознавания провалившихся сигналов */
     priceDirection?: 'up' | 'down';
+    /** Nison: риск ложного пробоя — снижение confidence */
+    falseBreakoutRisk?: boolean;
   }): TradingSignal {
     this.signalCounter++;
     const id = `sig_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_${String(this.signalCounter).padStart(3, '0')}`;
@@ -40,8 +43,8 @@ export class SignalGenerator {
 
     if (params.atr != null && params.atr > 0) {
       const is25x = params.mode === 'futures25x' || params.mode === 'scalping';
-      const slPct = is25x ? 0.006 : 0.008;
-      const slDistance = Math.min(params.atr * 1.5, params.entryPrice * slPct);
+      const slPct = is25x ? 0.0055 : 0.007; // Ужесточён SL для R:R (было 0.006/0.008)
+      const slDistance = Math.min(params.atr * 1.35, params.entryPrice * slPct); // ATR 1.35 вместо 1.5
       stopLoss = params.direction === 'LONG'
         ? params.entryPrice - slDistance
         : params.entryPrice + slDistance;
@@ -51,14 +54,14 @@ export class SignalGenerator {
         ? params.entryPrice + risk * rrMin
         : params.entryPrice - risk * rrMin;
       takeProfit2 = params.direction === 'LONG'
-        ? params.entryPrice + risk * (rrMin + 1)
-        : params.entryPrice - risk * (rrMin + 1);
+        ? params.entryPrice + risk * (rrMin + 1.2)
+        : params.entryPrice - risk * (rrMin + 1.2);
       takeProfit3 = params.direction === 'LONG'
-        ? params.entryPrice + risk * (rrMin + 2)
-        : params.entryPrice - risk * (rrMin + 2);
+        ? params.entryPrice + risk * (rrMin + 2.5)
+        : params.entryPrice - risk * (rrMin + 2.5); // TP3 4.5R вместо 4R — выше R:R
     } else {
       const is25x = params.mode === 'futures25x';
-      const slPercent = is25x ? 0.006 : isScalping ? 0.008 : 0.015;
+      const slPercent = is25x ? 0.0055 : isScalping ? 0.007 : 0.013; // Ужесточён SL для R:R
       const rrMin = is25x ? ASYMMETRIC_RR_MIN : (isScalping ? 1.5 : ASYMMETRIC_RR_MIN); // Burniske: R:R >= 2
       const tpPercent = slPercent * rrMin;
       stopLoss = params.direction === 'LONG'
@@ -68,11 +71,11 @@ export class SignalGenerator {
         ? params.entryPrice * (1 + tpPercent)
         : params.entryPrice * (1 - tpPercent);
       takeProfit2 = params.direction === 'LONG'
-        ? params.entryPrice * (1 + tpPercent * 1.5)
-        : params.entryPrice * (1 - tpPercent * 1.5);
+        ? params.entryPrice * (1 + tpPercent * 1.6)
+        : params.entryPrice * (1 - tpPercent * 1.6);
       takeProfit3 = params.direction === 'LONG'
-        ? params.entryPrice * (1 + tpPercent * 2.5)
-        : params.entryPrice * (1 - tpPercent * 2.5);
+        ? params.entryPrice * (1 + tpPercent * 2.7)
+        : params.entryPrice * (1 - tpPercent * 2.7); // Выше TP — улучшение R:R
     }
 
     const risk = Math.abs(params.entryPrice - stopLoss);
@@ -102,6 +105,11 @@ export class SignalGenerator {
       confidence = Math.max(0.45, confidence - failedHint.reduceConfidence);
     }
 
+    if (params.falseBreakoutRisk) {
+      confidence = Math.max(0.5, confidence - 0.08);
+      triggers.push('false_breakout_risk');
+    }
+
     return {
       id,
       timestamp: now.toISOString(),
@@ -119,7 +127,12 @@ export class SignalGenerator {
       confidence: Math.round(confidence * 100) / 100,
       timeframe: params.timeframe ?? '5m',
       triggers: triggers.length ? triggers : ['manual'],
-      expires_at: expiresAt.toISOString()
+      expires_at: expiresAt.toISOString(),
+      trailing_stop_config: {
+        initial_stop: stopLoss,
+        trail_step_pct: DEFAULT_TRAILING_CONFIG.trailStepPct,
+        activation_profit_pct: DEFAULT_TRAILING_CONFIG.activationProfitPct
+      }
     };
   }
 }

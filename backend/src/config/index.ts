@@ -31,7 +31,16 @@ export const config = {
     passphrase: envStr('OKX_PASSPHRASE'),
     get hasCredentials(): boolean {
       return Boolean(this.apiKey && this.secret);
+    },
+    /** Testnet (демо): OKX_SANDBOX=1 — торговля на тестовом счёте */
+    get sandbox(): boolean {
+      return envBool('OKX_SANDBOX', false);
     }
+  },
+
+  /** Включить исполнение ордеров через OKX при авто-трейдинге. Без флага — только сигналы. */
+  get autoTradingExecutionEnabled(): boolean {
+    return envBool('AUTO_TRADING_EXECUTION_ENABLED', false);
   },
 
   /** Прокси для запросов к OKX (обход Cloudflare). PROXY_LIST — список через запятую */

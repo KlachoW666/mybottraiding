@@ -62,6 +62,9 @@ function DirBadge({ dir }: { dir: string }) {
 }
 
 export default function AnalysisBreakdown({ data }: { data: AnalysisBreakdown }) {
+  if (!data?.forecast || !data?.orderBook || !data?.tape || !data?.candles || !data?.confluence) {
+    return null;
+  }
   const { orderBook, tape, candles, confluence, forecast, multiTF, tapeWindows } = data;
   const tfOrder = ['1d', '1h', '15m', '5m', '1m'] as const;
   const tapeWinOrder = ['1m', '5m', '15m', '1h'] as const;

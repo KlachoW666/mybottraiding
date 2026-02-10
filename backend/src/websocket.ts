@@ -66,10 +66,21 @@ export function createWebSocketServer(server: import('http').Server) {
       if (c.readyState === 1) c.send(msg);
     });
   };
+  const broadcastBreakout = (data: unknown) => {
+    const msg = JSON.stringify({ type: 'BREAKOUT_ALERT', data });
+    wss.clients.forEach((c) => {
+      if (c.readyState === 1) c.send(msg);
+    });
+  };
   (global as any).__broadcastSignal = broadcastSignal;
-  return { broadcastSignal };
+  (global as any).__broadcastBreakout = broadcastBreakout;
+  return { broadcastSignal, broadcastBreakout };
 }
 
 export function getBroadcastSignal(): ((s: TradingSignal, b?: unknown) => void) | null {
   return (global as any).__broadcastSignal ?? null;
+}
+
+export function getBroadcastBreakout(): ((data: unknown) => void) | null {
+  return (global as any).__broadcastBreakout ?? null;
 }

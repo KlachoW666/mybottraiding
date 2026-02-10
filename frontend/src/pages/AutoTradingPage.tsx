@@ -13,6 +13,20 @@ const QUICK_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'RIVER-USDT', 'DOGE-U
 const MAX_SYMBOLS = 5;
 const STORAGE_KEY = 'autoTradingSettings';
 const STORAGE_KEY_STATE = 'autoTradingState';
+const STORAGE_KEY_CLIENT_ID = 'orders_client_id';
+
+function getClientId(): string {
+  try {
+    let id = localStorage.getItem(STORAGE_KEY_CLIENT_ID);
+    if (!id) {
+      id = 'client_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
+      localStorage.setItem(STORAGE_KEY_CLIENT_ID, id);
+    }
+    return id;
+  } catch {
+    return 'default';
+  }
+}
 
 const LEVERAGE_MIN = 1;
 const LEVERAGE_MAX = 100;
@@ -31,8 +45,8 @@ const SCALPING_PRESET = {
   timeframe: '5m',
   intervalMs: 60000,
   sizePercent: 3,
-  leverage: 5,
-  minConfidence: 60,
+  leverage: 25,
+  minConfidence: 80,
   autoCloseTp: 1.5,
   autoCloseSl: 0.8
 };
@@ -67,8 +81,16 @@ interface AutoTradingSettings {
   scalpingMode: boolean;
   trailingStopPercent: number;
   maxDailyLossPercent: number;
+  /** crypto-trading-open: макс. время в позиции (часы), 0 = без лимита */
+  maxPositionDurationHours: number;
   /** Полный автомат: система сама выбирает лучший сигнал, TP/SL, настройки */
   fullAuto: boolean;
+  /** Полный автомат: брать топ монет из скринера (волатильность, объём, BB squeeze) вместо выбранных пар */
+  useScanner: boolean;
+  /** Полный автомат: исполнение ордеров через OKX (нужен AUTO_TRADING_EXECUTION_ENABLED на сервере) */
+  executeOrders: boolean;
+  /** При исполнении: использовать testnet (демо-счёт OKX) */
+  useTestnet: boolean;
 }
 
 const DEFAULT_SETTINGS: AutoTradingSettings = {
@@ -76,9 +98,9 @@ const DEFAULT_SETTINGS: AutoTradingSettings = {
   mode: 'futures',
   strategy: 'default',
   sizePercent: 3,
-  leverage: 5,
+  leverage: 25,
   intervalMs: 60000,
-  minConfidence: 60,
+  minConfidence: 80,
   autoClose: true,
   autoCloseTp: 1.5,
   autoCloseSl: 0.8,
@@ -89,14 +111,21 @@ const DEFAULT_SETTINGS: AutoTradingSettings = {
   scalpingMode: true,
   trailingStopPercent: 0,
   maxDailyLossPercent: 0,
-  fullAuto: false
+  maxPositionDurationHours: 24,
+  fullAuto: false,
+  useScanner: true,
+  executeOrders: false,
+  useTestnet: true
 };
+
+/** Аналитика: SHORT в плюсе, LONG в минусе — для LONG требуем +8% уверенности */
+const LONG_MIN_CONFIDENCE_BONUS = 8;
 
 /** Настройки для полного автомата — система подбирает лучший результат */
 const FULL_AUTO_DEFAULTS = {
   sizePercent: 5,
-  leverage: 15,
-  minConfidence: 65,
+  leverage: 25,
+  minConfidence: 82,
   useSignalSLTP: true,
   maxPositions: 2,
   cooldownSec: 600,
@@ -105,8 +134,16 @@ const FULL_AUTO_DEFAULTS = {
   autoClose: true,
   autoCloseTp: 2,
   autoCloseSl: 1,
-  maxDailyLossPercent: 10 // Hard Stop: автостоп при просадке 10%
+  maxDailyLossPercent: 0 // Hard Stop отключён
 };
+
+/** Цена в истории: до 7 знаков после запятой (не только 2) */
+function formatPrice(price: number): string {
+  if (typeof price !== 'number' || !Number.isFinite(price)) return '—';
+  if (price >= 1000) return price.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 5 });
+  if (price >= 1) return price.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 7 });
+  return price.toFixed(7);
+}
 
 function loadSettings(): AutoTradingSettings {
   try {
@@ -119,10 +156,13 @@ function loadSettings(): AutoTradingSettings {
       }
       s.symbols = s.symbols.slice(0, MAX_SYMBOLS).filter(Boolean);
       if (s.symbols.length === 0) s.symbols = ['BTC-USDT'];
-      s.leverage = Math.max(LEVERAGE_MIN, Math.min(LEVERAGE_MAX, s.leverage || 5));
+      s.leverage = Math.max(LEVERAGE_MIN, Math.min(LEVERAGE_MAX, s.leverage || 25));
       s.strategy = s.strategy || 'default';
       s.fullAuto = Boolean(s.fullAuto);
-      if ((s.minConfidence ?? 60) > 90) s.minConfidence = 90;
+      s.useScanner = s.useScanner !== false;
+      s.executeOrders = Boolean(s.executeOrders);
+      s.useTestnet = s.useTestnet !== false;
+      if ((s.minConfidence ?? 80) > 90) s.minConfidence = 90;
       return s;
     }
   } catch {}
@@ -168,6 +208,17 @@ interface StoredHistoryEntry {
   closeTime: string;
   autoOpened?: boolean;
   confidenceAtOpen?: number;
+  stopLoss?: number;
+  takeProfit?: number[];
+}
+
+function num(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function validClosePrice(h: { closePrice?: number }): boolean {
+  return typeof h.closePrice === 'number' && Number.isFinite(h.closePrice) && h.closePrice > 0;
 }
 
 function loadTradingState(): { balance: number; initialBalance: number; positions: DemoPosition[]; history: HistoryEntry[] } {
@@ -175,18 +226,46 @@ function loadTradingState(): { balance: number; initialBalance: number; position
     const raw = localStorage.getItem(STORAGE_KEY_STATE);
     if (raw) {
       const p = JSON.parse(raw) as { balance?: number; initialBalance?: number; positions?: StoredPosition[]; history?: StoredHistoryEntry[] };
-      const positions: DemoPosition[] = (p.positions ?? []).map((x) => ({
-        ...x,
-        openTime: new Date(x.openTime || Date.now())
-      }));
-      const history: HistoryEntry[] = (p.history ?? []).map((x) => ({
-        ...x,
-        openTime: new Date(x.openTime || Date.now()),
-        closeTime: new Date(x.closeTime || Date.now())
-      }));
+      const positions: DemoPosition[] = (p.positions ?? [])
+        .filter((x) => num(x.openPrice, 0) > 0)
+        .map((x) => {
+          const openPrice = num(x.openPrice, 0);
+          const currentPrice = num(x.currentPrice, 0) > 0 ? num(x.currentPrice, 0) : openPrice;
+          return {
+            ...x,
+            openPrice,
+            currentPrice,
+            size: num(x.size, 0),
+            openTime: new Date(x.openTime || Date.now())
+          };
+        });
+      const history: HistoryEntry[] = (p.history ?? []).map((x) => {
+        const openPrice = num(x.openPrice, 0);
+        const closePrice = num(x.closePrice, 0);
+        const size = num(x.size, 0);
+        const leverage = num(x.leverage, 1);
+        const hasValidClose = closePrice > 0;
+        const pnl = hasValidClose ? num(x.pnl, 0) : 0;
+        const pnlPercent = hasValidClose ? num(x.pnlPercent, 0) : 0;
+        const stopLoss = typeof x.stopLoss === 'number' && x.stopLoss > 0 ? x.stopLoss : undefined;
+        const takeProfit = Array.isArray(x.takeProfit) && x.takeProfit.length ? x.takeProfit : undefined;
+        return {
+          ...x,
+          openPrice,
+          closePrice,
+          size,
+          leverage,
+          pnl,
+          pnlPercent,
+          stopLoss,
+          takeProfit,
+          openTime: new Date(x.openTime || Date.now()),
+          closeTime: new Date(x.closeTime || Date.now())
+        };
+      });
       return {
-        balance: typeof p.balance === 'number' ? p.balance : 10000,
-        initialBalance: typeof p.initialBalance === 'number' ? p.initialBalance : 10000,
+        balance: num(p.balance, 10000),
+        initialBalance: num(p.initialBalance, 10000),
         positions,
         history: history.slice(0, 100)
       };
@@ -195,14 +274,31 @@ function loadTradingState(): { balance: number; initialBalance: number; position
   return { balance: 10000, initialBalance: 10000, positions: [], history: [] };
 }
 
+function sanitizeNum(n: number): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
 function saveTradingState(state: { balance: number; initialBalance: number; positions: DemoPosition[]; history: HistoryEntry[] }) {
   try {
     const toSave = {
-      balance: state.balance,
-      initialBalance: state.initialBalance,
-      positions: state.positions.map((p) => ({ ...p, openTime: p.openTime instanceof Date ? p.openTime.toISOString() : String(p.openTime) })),
+      balance: sanitizeNum(state.balance),
+      initialBalance: sanitizeNum(state.initialBalance),
+      positions: state.positions.map((p) => ({
+        ...p,
+        openPrice: sanitizeNum(p.openPrice),
+        currentPrice: sanitizeNum(p.currentPrice),
+        size: sanitizeNum(p.size),
+        openTime: p.openTime instanceof Date ? p.openTime.toISOString() : String(p.openTime)
+      })),
       history: state.history.map((h) => ({
         ...h,
+        openPrice: sanitizeNum(h.openPrice),
+        closePrice: sanitizeNum(h.closePrice),
+        size: sanitizeNum(h.size),
+        pnl: sanitizeNum(h.pnl),
+        pnlPercent: sanitizeNum(h.pnlPercent),
+        stopLoss: h.stopLoss != null && h.stopLoss > 0 ? sanitizeNum(h.stopLoss) : undefined,
+        takeProfit: Array.isArray(h.takeProfit) && h.takeProfit.length ? h.takeProfit.map(sanitizeNum) : undefined,
         openTime: h.openTime instanceof Date ? h.openTime.toISOString() : String(h.openTime),
         closeTime: h.closeTime instanceof Date ? h.closeTime.toISOString() : String(h.closeTime),
         confidenceAtOpen: h.confidenceAtOpen
@@ -251,6 +347,8 @@ interface HistoryEntry {
   closeTime: Date;
   autoOpened?: boolean;
   confidenceAtOpen?: number;
+  stopLoss?: number;
+  takeProfit?: number[];
 }
 
 function getInitialTradingState() {
@@ -270,13 +368,18 @@ export default function AutoTradingPage() {
   const [lastSignal, setLastSignal] = useState<TradingSignal | null>(null);
   const [lastBreakdown, setLastBreakdown] = useState<BreakdownType | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'error' | 'stopped_daily_loss'>('idle');
+  const [okxData, setOkxData] = useState<{ positions: Array<{ symbol: string; side: string; contracts: number; entryPrice: number; markPrice?: number; unrealizedPnl?: number }>; balance: number; openCount: number; useTestnet: boolean } | null>(null);
   const closePositionRef = useRef<(pos: DemoPosition, price?: number) => void>(() => {});
   const positionsRef = useRef<DemoPosition[]>([]);
   const closingIdsRef = useRef<Set<string>>(new Set());
   const lastOpenTimeRef = useRef<Record<string, number>>({});
+  const historyRef = useRef<HistoryEntry[]>([]);
+  historyRef.current = history;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   positionsRef.current = positions;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const symbols = settings.symbols;
   const mode = settings.mode;
@@ -295,6 +398,22 @@ export default function AutoTradingPage() {
   }, [tradingState.balance, tradingState.initialBalance, tradingState.positions, tradingState.history]);
 
   useEffect(() => {
+    if (!enabled || !settings.fullAuto || !settings.executeOrders) {
+      setOkxData(null);
+      return;
+    }
+    const useTestnet = settings.useTestnet !== false;
+    const fetchOkx = () => {
+      api.get<{ positions: any[]; balance: number; openCount: number; useTestnet: boolean }>(`/trading/positions?useTestnet=${useTestnet}`)
+        .then((data) => setOkxData(data))
+        .catch(() => setOkxData(null));
+    };
+    fetchOkx();
+    const id = setInterval(fetchOkx, 15000);
+    return () => clearInterval(id);
+  }, [enabled, settings.fullAuto, settings.executeOrders, settings.useTestnet]);
+
+  useEffect(() => {
     if (!enabled) return;
     const syms = symbols
       .map((s) => normSymbol(s) || s.replace(/_/g, '-'))
@@ -303,7 +422,18 @@ export default function AutoTradingPage() {
     const tf = '5m';
     const isFullAuto = settings.fullAuto;
     const payload = isFullAuto
-      ? { symbols: syms, timeframe: tf, fullAuto: true, intervalMs: FULL_AUTO_DEFAULTS.intervalMs }
+      ? {
+          symbols: syms,
+          timeframe: tf,
+          fullAuto: true,
+          intervalMs: FULL_AUTO_DEFAULTS.intervalMs,
+          useScanner: settings.useScanner !== false,
+          executeOrders: settings.executeOrders === true,
+          useTestnet: settings.useTestnet !== false,
+          maxPositions: FULL_AUTO_DEFAULTS.maxPositions,
+          sizePercent: FULL_AUTO_DEFAULTS.sizePercent,
+          leverage: FULL_AUTO_DEFAULTS.leverage
+        }
       : {
           symbols: syms,
           timeframe: tf,
@@ -324,7 +454,7 @@ export default function AutoTradingPage() {
       fetch(`${API}/market/auto-analyze/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }).catch(() => {});
       setStatus('idle');
     };
-  }, [enabled, symbols, settings.intervalMs, settings.scalpingMode, settings.strategy, settings.fullAuto]);
+  }, [enabled, symbols, settings.intervalMs, settings.scalpingMode, settings.strategy, settings.fullAuto, settings.useScanner]);
 
   useEffect(() => {
     const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
@@ -337,14 +467,17 @@ export default function AutoTradingPage() {
           const s = 'symbol' in payload ? payload : payload.signal;
           const bd = 'breakdown' in payload ? payload.breakdown : undefined;
           const sigNorm = normSymbol(s?.symbol ?? '');
-          const syms = settingsRef.current.symbols ?? [];
-          const isSelected = syms.some((sym) => normSymbol(sym) === sigNorm);
-          if (isSelected) setLastSignal(s);
-          if (bd) setLastBreakdown(bd);
-          if (!enabled || !isSelected || !s?.symbol) return;
           const st = settingsRef.current;
+          const syms = st.symbols ?? [];
+          const isSelected = syms.some((sym) => normSymbol(sym) === sigNorm);
+          const isTestSignal = Array.isArray(s?.triggers) && s.triggers.includes('test_signal');
           const useFullAuto = st.fullAuto;
-          const minConf = useFullAuto ? FULL_AUTO_DEFAULTS.minConfidence : st.minConfidence;
+          if (isSelected || isTestSignal || useFullAuto) setLastSignal(s);
+          if (bd && typeof (bd as { forecast?: { confidence?: number } })?.forecast?.confidence === 'number') setLastBreakdown(bd);
+          if (!enabledRef.current || !s?.symbol) return;
+          if (!useFullAuto && !isSelected && !isTestSignal) return;
+          const minConfBase = useFullAuto ? FULL_AUTO_DEFAULTS.minConfidence : st.minConfidence;
+          const minConf = s.direction === 'LONG' ? minConfBase + LONG_MIN_CONFIDENCE_BONUS : minConfBase;
           const sizePct = useFullAuto ? FULL_AUTO_DEFAULTS.sizePercent : st.sizePercent;
           const lev = useFullAuto ? FULL_AUTO_DEFAULTS.leverage : (st.mode === 'spot' ? 1 : st.leverage);
           if (!st.allowedDirections?.includes(s.direction)) return;
@@ -364,12 +497,22 @@ export default function AutoTradingPage() {
           if (totalLocked >= maxLocked) return;
 
           const now = Date.now();
-          const cooldown = useFullAuto ? FULL_AUTO_DEFAULTS.cooldownSec : (st.cooldownSec ?? 300);
+          let cooldown = useFullAuto ? FULL_AUTO_DEFAULTS.cooldownSec : (st.cooldownSec ?? 300);
+          const recentHistory = historyRef.current.slice(-5);
+          const consecutiveLosses = (() => {
+            let n = 0;
+            for (let i = recentHistory.length - 1; i >= 0; i--) {
+              if (recentHistory[i].pnl < 0) n++; else break;
+            }
+            return n;
+          })();
+          if (consecutiveLosses >= 2) cooldown = Math.max(cooldown * 2, 900);
           const lastOpen = lastOpenTimeRef.current[sigNorm] ?? 0;
-          if (now - lastOpen < cooldown * 1000) return;
+          if (!isTestSignal && now - lastOpen < cooldown * 1000) return;
 
           lastOpenTimeRef.current[sigNorm] = now;
-          openPositionRef.current(s, sizePct, lev, { fullAuto: useFullAuto });
+          const volMult = (bd as any)?.volatilityMultiplier ?? 1; // Sinclair: при высокой волатильности — меньше размер
+          openPositionRef.current(s, sizePct, lev, { fullAuto: useFullAuto, volatilityMultiplier: volMult });
         }
       } catch {}
     };
@@ -379,14 +522,18 @@ export default function AutoTradingPage() {
   const balanceRef = useRef(balance);
   balanceRef.current = balance;
 
-  const openPosition = (signal: TradingSignal, sizePct: number, lev: number, opts?: { fullAuto?: boolean }) => {
+  const openPosition = (signal: TradingSignal, sizePct: number, lev: number, opts?: { fullAuto?: boolean; volatilityMultiplier?: number }) => {
+    const entry = typeof signal.entry_price === 'number' && Number.isFinite(signal.entry_price) && signal.entry_price > 0 ? signal.entry_price : 0;
+    if (entry <= 0) return;
     const b = balanceRef.current;
     let size: number;
     if (opts?.fullAuto && signal.stop_loss > 0) {
-      size = getPositionSize(b, signal.entry_price, signal.stop_loss, { riskPct: 0.02, fallbackPct: sizePct / 100 });
+      size = getPositionSize(b, entry, signal.stop_loss, { riskPct: 0.02, fallbackPct: sizePct / 100 });
     } else {
       size = (b * sizePct) / 100;
     }
+    const volMult = opts?.volatilityMultiplier ?? 1; // Sinclair: при высокой волатильности × 0.7
+    size = size * volMult;
     size = Math.min(size, b * 0.25);
     if (size > b || size <= 0) return;
     const pos: DemoPosition = {
@@ -394,8 +541,8 @@ export default function AutoTradingPage() {
       signal,
       size,
       leverage: lev,
-      openPrice: signal.entry_price,
-      currentPrice: signal.entry_price,
+      openPrice: entry,
+      currentPrice: entry,
       pnl: 0,
       pnlPercent: 0,
       openTime: new Date(),
@@ -405,22 +552,41 @@ export default function AutoTradingPage() {
     };
     setPositions((p) => [...p, pos]);
     setBalance((prev) => prev - size);
+    api.post(`${API}/orders`, {
+      id: pos.id,
+      clientId: getClientId(),
+      pair: signal.symbol,
+      direction: signal.direction,
+      size: pos.size,
+      leverage: lev,
+      openPrice: entry,
+      stopLoss: pos.stopLoss,
+      takeProfit: pos.takeProfit,
+      openTime: pos.openTime.toISOString(),
+      autoOpened: true,
+      confidenceAtOpen: typeof signal.confidence === 'number' ? signal.confidence : undefined
+    }).catch(() => {});
     notifyTelegram(
       `📈 <b>Позиция открыта</b>\n` +
       `${signal.symbol} ${signal.direction} | $${size.toFixed(2)} | ${lev}x\n` +
-      `Вход: ${signal.entry_price?.toLocaleString('ru-RU')}`
+      `Вход: ${entry.toLocaleString('ru-RU')}`
     );
   };
   const openPositionRef = useRef(openPosition);
   openPositionRef.current = openPosition;
 
   const closePosition = (pos: DemoPosition, usePrice?: number) => {
-    const price = usePrice ?? pos.currentPrice;
+    let price = usePrice ?? pos.currentPrice;
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+      price = pos.openPrice;
+    }
     const lev = pos.leverage || 1;
     const pnl = pos.signal.direction === 'LONG'
       ? ((price - pos.openPrice) / pos.openPrice) * pos.size * lev
       : ((pos.openPrice - price) / pos.openPrice) * pos.size * lev;
     const pnlPercent = (pnl / pos.size) * 100;
+    const sl = getSL(pos);
+    const tp = getTP(pos);
     const entry: HistoryEntry = {
       id: pos.id,
       pair: pos.signal.symbol,
@@ -434,7 +600,9 @@ export default function AutoTradingPage() {
       openTime: pos.openTime,
       closeTime: new Date(),
       autoOpened: pos.autoOpened,
-      confidenceAtOpen: typeof pos.signal.confidence === 'number' ? pos.signal.confidence : undefined
+      confidenceAtOpen: typeof pos.signal.confidence === 'number' ? pos.signal.confidence : undefined,
+      stopLoss: sl > 0 ? sl : undefined,
+      takeProfit: tp.length > 0 ? tp : undefined
     };
     setBalance((b) => b + pos.size + pnl);
     setPositions((p) => p.filter((x) => x.id !== pos.id));
@@ -442,6 +610,24 @@ export default function AutoTradingPage() {
       const without = h.filter((x) => x.id !== entry.id);
       return [entry, ...without].slice(0, 100);
     });
+    api.patch(`${API}/orders/${pos.id}`, {
+      closePrice: price,
+      pnl,
+      pnlPercent,
+      closeTime: entry.closeTime.toISOString()
+    }).catch(() => {});
+    fetch(`${API}/ml/trade-outcome`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: pos.signal.symbol,
+        direction: pos.signal.direction,
+        confidence: pos.signal.confidence ?? 0,
+        riskReward: pos.signal.risk_reward ?? 1,
+        triggers: pos.signal.triggers ?? [],
+        pnl
+      })
+    }).catch(() => {});
     notifyTelegram(
       `📉 <b>Позиция закрыта</b>\n` +
       `${pos.signal.symbol} ${pos.signal.direction}\n` +
@@ -464,11 +650,19 @@ export default function AutoTradingPage() {
             const highSince = p.signal.direction === 'LONG' ? Math.max(p.highSinceOpen ?? p.openPrice, price) : undefined;
             const lowSince = p.signal.direction === 'SHORT' ? Math.min(p.lowSinceOpen ?? p.openPrice, price) : undefined;
             const updated = { ...p, currentPrice: price, highSinceOpen: highSince ?? p.highSinceOpen, lowSinceOpen: lowSince ?? p.lowSinceOpen };
+            const openTs = p.openTime instanceof Date ? p.openTime.getTime() : new Date(p.openTime as string).getTime();
+            const holdSec = (Date.now() - openTs) / 1000;
+            const minHoldBeforeCloseSec = 120;
+            let shouldClose = false;
+            let closeAt = price;
+
+            if (holdSec < minHoldBeforeCloseSec) {
+              return updated;
+            }
+
             const sl = getSL(p);
             const useSignalSLTP = settings.fullAuto || settings.useSignalSLTP;
             const tpLevels = useSignalSLTP ? getTP(p) : [];
-            let shouldClose = false;
-            let closeAt = price;
 
             if (useSignalSLTP && (sl > 0 || tpLevels.length > 0)) {
               if (p.signal.direction === 'LONG') {
@@ -511,10 +705,17 @@ export default function AutoTradingPage() {
                 }
               }
             }
+            const maxDurationHours = settings.maxPositionDurationHours ?? 24;
+            if (!shouldClose && maxDurationHours > 0) {
+              const hoursOpen = holdSec / 3600;
+              if (hoursOpen > maxDurationHours) {
+                shouldClose = true;
+                closeAt = price;
+              }
+            }
             const autoCloseTp = settings.fullAuto ? FULL_AUTO_DEFAULTS.autoCloseTp : settings.autoCloseTp;
             const autoCloseSl = settings.fullAuto ? FULL_AUTO_DEFAULTS.autoCloseSl : settings.autoCloseSl;
             if (!shouldClose && (settings.fullAuto ? FULL_AUTO_DEFAULTS.autoClose : settings.autoClose)) {
-              const holdSec = (Date.now() - new Date(p.openTime).getTime()) / 1000;
               if (holdSec >= 60) {
                 const pnlPct = p.signal.direction === 'LONG'
                   ? ((price - p.openPrice) / p.openPrice) * 100 * (p.leverage || 1)
@@ -525,17 +726,14 @@ export default function AutoTradingPage() {
                 }
               }
             }
-            if (shouldClose) {
-              const holdSec = (Date.now() - new Date(p.openTime).getTime()) / 1000;
-              if (holdSec >= 45) {
-                if (closingIdsRef.current.has(p.id)) return null;
-                closingIdsRef.current.add(p.id);
-                setTimeout(() => {
-                  closePositionRef.current(updated, closeAt);
-                  closingIdsRef.current.delete(p.id);
-                }, 0);
-                return null;
-              }
+            if (shouldClose && holdSec >= minHoldBeforeCloseSec) {
+              if (closingIdsRef.current.has(p.id)) return null;
+              closingIdsRef.current.add(p.id);
+              setTimeout(() => {
+                closePositionRef.current(updated, closeAt);
+                closingIdsRef.current.delete(p.id);
+              }, 0);
+              return null;
             }
             return updated;
           });
@@ -546,7 +744,7 @@ export default function AutoTradingPage() {
     fetchPrices();
     const id = setInterval(fetchPrices, 1200);
     return () => clearInterval(id);
-  }, [positions.length, settings.autoClose, settings.autoCloseTp, settings.autoCloseSl, settings.useSignalSLTP, settings.trailingStopPercent, settings.fullAuto]);
+  }, [positions.length, settings.autoClose, settings.autoCloseTp, settings.autoCloseSl, settings.useSignalSLTP, settings.trailingStopPercent, settings.fullAuto, settings.maxPositionDurationHours]);
 
   const totalPnl = balance - initialBalance;
   const totalPnlPercent = initialBalance > 0 ? (totalPnl / initialBalance) * 100 : 0;
@@ -570,17 +768,18 @@ export default function AutoTradingPage() {
     setEnabled(false);
     setStatus('stopped_daily_loss');
   }, [enabled, totalPnlPercent, settings.maxDailyLossPercent]);
-  const winTrades = history.filter((h) => h.pnl > 0).length;
-  const lossTrades = history.filter((h) => h.pnl < 0).length;
-  const totalTrades = history.length;
+  const validHistory = history.filter(validClosePrice);
+  const winTrades = validHistory.filter((h) => h.pnl > 0).length;
+  const lossTrades = validHistory.filter((h) => h.pnl < 0).length;
+  const totalTrades = validHistory.length;
   const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
-  const grossProfit = history.filter((h) => h.pnl > 0).reduce((s, h) => s + h.pnl, 0);
-  const grossLoss = Math.abs(history.filter((h) => h.pnl < 0).reduce((s, h) => s + h.pnl, 0));
+  const grossProfit = validHistory.filter((h) => h.pnl > 0).reduce((s, h) => s + h.pnl, 0);
+  const grossLoss = Math.abs(validHistory.filter((h) => h.pnl < 0).reduce((s, h) => s + h.pnl, 0));
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
   const avgWin = winTrades > 0 ? grossProfit / winTrades : 0;
   const avgLoss = lossTrades > 0 ? grossLoss / lossTrades : 0;
-  const bestTrade = history.length ? Math.max(...history.map((h) => h.pnl), 0) : 0;
-  const worstTrade = history.length ? Math.min(...history.map((h) => h.pnl), 0) : 0;
+  const bestTrade = validHistory.length ? Math.max(...validHistory.map((h) => h.pnl), 0) : 0;
+  const worstTrade = validHistory.length ? Math.min(...validHistory.map((h) => h.pnl), 0) : 0;
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto">
@@ -614,7 +813,49 @@ export default function AutoTradingPage() {
             />
             <span className="font-semibold">Полный автомат</span>
           </label>
+          {settings.fullAuto && (
+            <label className="flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition hover:border-[var(--accent)]/50 shrink-0" style={{ borderColor: settings.useScanner ? 'var(--accent)' : 'var(--border)', background: settings.useScanner ? 'var(--accent-dim)' : 'var(--bg-card-solid)' }}>
+              <input
+                type="checkbox"
+                checked={settings.useScanner !== false}
+                onChange={(e) => updateSetting('useScanner', e.target.checked)}
+                className="rounded w-5 h-5 accent-[var(--accent)]"
+              />
+              <span className="font-medium">Скринер: топ монет по волатильности/объёму</span>
+            </label>
+          )}
+          {settings.fullAuto && (
+            <>
+              <label className="flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition hover:border-[var(--accent)]/50 shrink-0" style={{ borderColor: settings.executeOrders ? 'var(--accent)' : 'var(--border)', background: settings.executeOrders ? 'var(--accent-dim)' : 'var(--bg-card-solid)' }}>
+                <input
+                  type="checkbox"
+                  checked={settings.executeOrders === true}
+                  onChange={(e) => updateSetting('executeOrders', e.target.checked)}
+                  className="rounded w-5 h-5 accent-[var(--accent)]"
+                />
+                <span className="font-medium">Исполнение через OKX (реальные ордера)</span>
+              </label>
+              {settings.executeOrders && (
+                <label className="flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition hover:border-[var(--accent)]/50 shrink-0" style={{ borderColor: settings.useTestnet ? 'var(--accent)' : 'var(--border)', background: settings.useTestnet ? 'var(--accent-dim)' : 'var(--bg-card-solid)' }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.useTestnet !== false}
+                    onChange={(e) => updateSetting('useTestnet', e.target.checked)}
+                    className="rounded w-5 h-5 accent-[var(--accent)]"
+                  />
+                  <span className="font-medium">Testnet (демо-счёт OKX)</span>
+                </label>
+              )}
+            </>
+          )}
         </div>
+        {settings.fullAuto && (
+          <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+            {settings.useScanner !== false
+              ? 'В каждом цикле система берёт топ-5 монет из скринера (волатильность, объём, BB squeeze), затем выбирает лучший сигнал.'
+              : 'Используются выбранные ниже пары для поиска лучшего сигнала.'}
+          </p>
+        )}
 
         {/* Режим и пары (до 5) */}
         <div className="flex flex-wrap gap-6 mb-8">
@@ -730,12 +971,61 @@ export default function AutoTradingPage() {
           )}
         </div>
 
+        {/* Douglas (Trading in the Zone): принятие риска, правота ≠ прибыль */}
+        <div className="mb-4 p-3 rounded-lg border text-xs" style={{ borderColor: 'var(--border)', background: 'rgba(255,255,255,0.02)' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Принятие риска — фундамент. Правота ≠ прибыль (Douglas).</span>
+        </div>
+
         {settings.fullAuto && (
           <div className="mb-6 p-4 rounded-xl border" style={{ borderColor: 'var(--accent)', background: 'var(--accent-dim)' }}>
             <p className="text-sm font-medium mb-1">Автоматические настройки</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              Динамический размер (риск 2%) · Плечо {FULL_AUTO_DEFAULTS.leverage}x · Мин. уверенность {FULL_AUTO_DEFAULTS.minConfidence}% · TP/SL из анализа · Макс. {FULL_AUTO_DEFAULTS.maxPositions} позиций · Hard Stop при просадке {FULL_AUTO_DEFAULTS.maxDailyLossPercent}%
+              Динамический размер (риск 2%) · Плечо {FULL_AUTO_DEFAULTS.leverage}x · Мин. уверенность {FULL_AUTO_DEFAULTS.minConfidence}% · TP/SL из анализа · Макс. {FULL_AUTO_DEFAULTS.maxPositions} позиций{FULL_AUTO_DEFAULTS.maxDailyLossPercent > 0 ? ` · Hard Stop при просадке ${FULL_AUTO_DEFAULTS.maxDailyLossPercent}%` : ''}
             </p>
+          </div>
+        )}
+
+        {settings.fullAuto && settings.executeOrders && okxData && (
+          <div className="mb-6 p-4 rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-card-solid)' }}>
+            <p className="text-sm font-medium mb-2">
+              Позиции OKX {okxData.useTestnet ? '(Testnet)' : '(Real)'}
+            </p>
+            <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+              Баланс: ${(okxData.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} · Открыто: {okxData.openCount ?? 0}
+            </p>
+            {(okxData.balance ?? 0) === 0 && (
+              <p className="text-xs mb-2" style={{ color: 'var(--warning)' }}>
+                Для исполнения ордеров пополните счёт OKX {okxData.useTestnet ? '(демо на okx.com)' : ''}.
+              </p>
+            )}
+            {okxData.positions && okxData.positions.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr style={{ borderColor: 'var(--border)' }}>
+                      <th className="text-left py-1 px-2">Символ</th>
+                      <th className="text-right py-1 px-2">Сторона</th>
+                      <th className="text-right py-1 px-2">Контракты</th>
+                      <th className="text-right py-1 px-2">Вход</th>
+                      <th className="text-right py-1 px-2">P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {okxData.positions.map((p: any, i: number) => (
+                      <tr key={i} className="border-t" style={{ borderColor: 'var(--border)' }}>
+                        <td className="py-1 px-2">{p.symbol}</td>
+                        <td className="text-right py-1 px-2">{p.side}</td>
+                        <td className="text-right py-1 px-2">{p.contracts}</td>
+                        <td className="text-right py-1 px-2">{p.entryPrice?.toFixed(4)}</td>
+                        <td className={`text-right py-1 px-2 ${(p.unrealizedPnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {p.unrealizedPnl != null ? (p.unrealizedPnl >= 0 ? '+' : '') + p.unrealizedPnl.toFixed(2) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -964,12 +1254,41 @@ export default function AutoTradingPage() {
                 {lastSignal.take_profit?.length ? <p className="text-xs" style={{ color: 'var(--success)' }}>TP: {lastSignal.take_profit.map((t: number) => t.toLocaleString('ru-RU')).join(' / ')}</p> : null}
                 <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>{new Date(lastSignal.timestamp || Date.now()).toLocaleString('ru-RU')}</p>
               </div>
-              {lastBreakdown && <AnalysisBreakdown data={lastBreakdown} />}
+              {lastBreakdown && <AnalysisBreakdown data={lastBreakdown as import('../components/AnalysisBreakdown').AnalysisBreakdown} />}
             </div>
           ) : (
-            <p className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>
-              {enabled && status === 'running' ? 'Ожидание сигналов... Анализ каждую минуту. Попробуйте BTC-USDT или ETH-USDT для быстрого результата.' : 'Включите авто-торговлю.'}
-            </p>
+            <div className="text-sm py-4 space-y-2" style={{ color: 'var(--text-muted)' }}>
+              {enabled && status === 'running' ? (
+                <>
+                  <p>Ожидание сигналов… Анализ каждую минуту.</p>
+                  {settings.fullAuto ? (
+                    <>
+                      <p className="text-xs mt-2">
+                        В полном автомате берутся топ-5 монет из скринера; сигнал появляется только при уверенности ≥{FULL_AUTO_DEFAULTS.minConfidence}%. Если сигнала нет — ни одна монета пока не набрала порог.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          fetch(`${API}/market/test-signal`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ symbol: 'BTC-USDT', direction: 'LONG' })
+                          }).then(() => {}).catch(() => {});
+                        }}
+                        className="mt-3 px-4 py-2 rounded-lg text-sm font-medium"
+                        style={{ background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
+                      >
+                        Тестовый сигнал (демо)
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-xs mt-2">Попробуйте BTC-USDT или ETH-USDT для быстрого результата.</p>
+                  )}
+                </>
+              ) : (
+                <p>Включите авто-торговлю (переключатель выше).</p>
+              )}
+            </div>
           )}
         </section>
       </div>
@@ -1012,7 +1331,8 @@ export default function AutoTradingPage() {
                   <div className="flex-1 min-w-0 flex flex-col gap-2" style={{ minHeight: 220 }}>
                     <div className="flex-1 min-h-[200px]">
                       <PositionChart
-                        symbol={pos.signal.symbol.replace('/', '-')}
+                        key={`position-chart-${pos.id}`}
+                        symbol={(pos.signal.symbol || '').replace(/:USDT$/i, '').replace(/\//g, '-')}
                         timeframe="5m"
                         height={200}
                         live={true}
@@ -1045,7 +1365,10 @@ export default function AutoTradingPage() {
                 <tr className="border-b" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)', background: 'var(--bg-card-solid)' }}>
                   <th className="text-left py-3 px-2">Пара</th>
                   <th className="text-left py-3 px-2">Направление</th>
+                  <th className="text-right py-3 px-2">Сумма входа</th>
                   <th className="text-right py-3 px-2">Вход / Выход</th>
+                  <th className="text-right py-3 px-2">SL</th>
+                  <th className="text-right py-3 px-2">TP</th>
                   <th className="text-right py-3 px-2">P&L</th>
                   <th className="text-left py-3 px-2">Время</th>
                 </tr>
@@ -1055,8 +1378,11 @@ export default function AutoTradingPage() {
                   <tr key={h.id} className="border-b" style={{ borderColor: 'var(--border)' }}>
                     <td className="py-3 px-2">{h.pair}</td>
                     <td className="py-3 px-2">{h.direction}</td>
-                    <td className="text-right py-3 px-2">{h.openPrice.toFixed(2)} / {h.closePrice.toFixed(2)}</td>
-                    <td className={`text-right py-3 px-2 font-medium ${h.pnl >= 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]'}`}>{h.pnl >= 0 ? '+' : ''}{h.pnl.toFixed(2)}</td>
+                    <td className="text-right py-3 px-2 tabular-nums">${(h.size ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="text-right py-3 px-2 tabular-nums">{formatPrice(h.openPrice)} / {validClosePrice(h) ? formatPrice(h.closePrice) : '—'}</td>
+                    <td className="text-right py-3 px-2 tabular-nums" style={{ color: 'var(--danger)' }}>{h.stopLoss != null && h.stopLoss > 0 ? formatPrice(h.stopLoss) : '—'}</td>
+                    <td className="text-right py-3 px-2 tabular-nums" style={{ color: 'var(--success)' }}>{Array.isArray(h.takeProfit) && h.takeProfit.length ? h.takeProfit.map(formatPrice).join(' / ') : '—'}</td>
+                    <td className={`text-right py-3 px-2 font-medium ${validClosePrice(h) ? (h.pnl >= 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]') : ''}`}>{validClosePrice(h) ? (h.pnl >= 0 ? '+' : '') + h.pnl.toFixed(2) : '—'}</td>
                     <td className="py-3 px-2" style={{ color: 'var(--text-muted)' }}>{new Date(h.closeTime).toLocaleString('ru-RU')}</td>
                   </tr>
                 ))}

@@ -3,6 +3,8 @@ const STORAGE_KEY = 'cryptosignal-settings';
 export interface Settings {
   connections: {
     okx: { enabled: boolean; apiKey: string; apiSecret: string; passphrase: string };
+    /** Прокси для OKX: http://user:pass@ip:port */
+    proxy?: string;
     tradingview: { enabled: boolean };
     scalpboard: { enabled: boolean; apiKey: string };
   };
@@ -40,6 +42,7 @@ export interface Settings {
 const defaults: Settings = {
   connections: {
     okx: { enabled: true, apiKey: '', apiSecret: '', passphrase: '' },
+    proxy: '',
     tradingview: { enabled: true },
     scalpboard: { enabled: false, apiKey: '' }
   },
@@ -88,6 +91,7 @@ function load(): Settings {
           ...defaults.connections,
           ...parsed.connections,
           okx: { ...defaults.connections.okx, ...parsed.connections.okx },
+          proxy: parsed.connections?.proxy ?? defaults.connections.proxy ?? '',
           tradingview: { ...defaults.connections.tradingview, ...parsed.connections.tradingview },
           scalpboard: { ...defaults.connections.scalpboard, ...parsed.connections.scalpboard }
         };

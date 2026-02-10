@@ -19,7 +19,11 @@ export default function SignalFeed() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'signal') setSignals((prev) => [msg.data, ...prev]);
+        if (msg.type === 'signal' && msg.data) {
+          const payload = msg.data as { signal?: TradingSignal } & TradingSignal;
+          const sig = payload.signal ?? payload;
+          if (sig?.symbol != null) setSignals((prev) => [sig as TradingSignal, ...prev]);
+        }
       } catch {}
     };
     return () => ws.close();

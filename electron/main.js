@@ -136,6 +136,16 @@ async function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     mainWindow.focus();
+    if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_OPEN_DEVTOOLS === '1') {
+      mainWindow.webContents.openDevTools();
+    }
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    setTimeout(() => {
+      mainWindow?.webContents?.executeJavaScript('!!(document.getElementById("root") && !document.getElementById("root").innerHTML.trim())').catch(() => {}).then((rootEmpty) => {
+        if (rootEmpty) mainWindow?.webContents?.openDevTools();
+      });
+    }, 2500);
   });
   mainWindow.webContents.on('did-fail-load', (_, code, desc) => {
     console.error('Page failed to load:', code, desc);

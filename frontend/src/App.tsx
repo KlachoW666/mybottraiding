@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Dashboard from './pages/Dashboard';
 import SignalFeed from './pages/SignalFeed';
 import ChartView from './pages/ChartView';
@@ -6,20 +6,26 @@ import DemoPage from './pages/DemoPage';
 import AutoTradingPage from './pages/AutoTradingPage';
 import SettingsPage from './pages/SettingsPage';
 import PnlCalculatorPage from './pages/PnlCalculatorPage';
+import ScannerPage from './pages/ScannerPage';
+import AdminPanel from './pages/AdminPanel';
+import AuthPage from './pages/AuthPage';
 import { getSavedPage, savePage } from './store/appStore';
 import { useNotifications } from './contexts/NotificationContext';
+import { useAuth } from './contexts/AuthContext';
 import { getSettings } from './store/settingsStore';
 
-type Page = 'dashboard' | 'signals' | 'chart' | 'demo' | 'autotrade' | 'pnl' | 'settings';
+type Page = 'dashboard' | 'signals' | 'chart' | 'demo' | 'autotrade' | 'scanner' | 'pnl' | 'settings' | 'admin';
 
-const PAGES: { id: Page; label: string; icon: string }[] = [
+const ALL_PAGES: { id: Page; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Обзор', icon: '◉' },
   { id: 'signals', label: 'Сигналы', icon: '◈' },
   { id: 'chart', label: 'График', icon: '▣' },
   { id: 'demo', label: 'Демо', icon: '◆' },
   { id: 'autotrade', label: 'Авто', icon: '◇' },
+  { id: 'scanner', label: 'Скринер', icon: '▤' },
   { id: 'pnl', label: 'PNL', icon: '💰' },
-  { id: 'settings', label: 'Настройки', icon: '⚙' }
+  { id: 'settings', label: 'Настройки', icon: '⚙' },
+  { id: 'admin', label: 'Админ', icon: '🎛' }
 ];
 
 function useSignalToasts() {
@@ -31,17 +37,27 @@ function useSignalToasts() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'signal' && msg.data) {
-          const s = msg.data;
-          const cfg = getSettings().notifications;
+        if (msg.type === 'BREAKOUT_ALERT' && msg.data) {
+          const d = msg.data as { symbol?: string; breakout?: { direction?: string; confidence?: number } };
+          const conf = ((d.breakout?.confidence ?? 0) * 100).toFixed(0);
+          addToast({
+            type: 'signal',
+            title: `Пробой: ${d.symbol || '?'} — ${d.breakout?.direction || '?'}`,
+            message: `Уверенность ${conf}%`,
+            duration: 6000
+          });
+        } else if (msg.type === 'signal' && msg.data) {
+          const payload = msg.data as { symbol?: string; direction?: string; confidence?: number; entry_price?: number; signal?: { symbol?: string; direction?: string; confidence?: number; entry_price?: number } };
+          const s = payload.signal ?? payload;
           const conf = (s.confidence ?? 0) * 100;
+          const cfg = getSettings().notifications;
           if (conf < (cfg?.minConfidence ?? 75)) return;
           if (s.direction === 'LONG' && !cfg?.long) return;
           if (s.direction === 'SHORT' && !cfg?.short) return;
           addToast({
             type: 'signal',
-            title: `${s.symbol} — ${s.direction}`,
-            message: `Вход: ${s.entry_price?.toLocaleString('ru-RU')} • Уверенность: ${conf.toFixed(0)}%`,
+            title: `${s.symbol ?? '?'} — ${s.direction ?? '?'}`,
+            message: `Вход: ${(s.entry_price ?? 0).toLocaleString('ru-RU')} • Уверенность: ${conf.toFixed(0)}%`,
             duration: 6000
           });
           if (cfg?.sound) {
@@ -59,8 +75,8 @@ function useSignalToasts() {
             } catch {}
           }
           if (cfg?.desktop && 'Notification' in window && Notification.permission === 'granted') {
-            new Notification(`${s.symbol} ${s.direction}`, {
-              body: `Вход: ${s.entry_price?.toLocaleString('ru-RU')} • ${conf.toFixed(0)}%`,
+            new Notification(`${s.symbol ?? '?'} ${s.direction ?? '?'}`, {
+              body: `Вход: ${(s.entry_price ?? 0).toLocaleString('ru-RU')} • ${conf.toFixed(0)}%`,
               icon: '/favicon.ico'
             });
           }
@@ -71,10 +87,27 @@ function useSignalToasts() {
   }, [addToast]);
 }
 
+const FALLBACK_TABS: Page[] = ['dashboard', 'settings'];
+
 export default function App() {
+  const { user, loading, logout } = useAuth();
+  const allowedSet = useMemo(() => {
+    const tabs = user?.allowedTabs ?? [];
+    const set = new Set(tabs.length > 0 ? tabs : FALLBACK_TABS);
+    return set;
+  }, [user?.allowedTabs]);
+  const PAGES = useMemo(() => {
+    const list = ALL_PAGES.filter((p) => allowedSet.has(p.id));
+    return list.length > 0 ? list : ALL_PAGES.filter((p) => p.id !== 'admin');
+  }, [allowedSet]);
+
   const [page, setPage] = useState<Page>(() => {
-    const saved = getSavedPage();
-    return (PAGES.some((p) => p.id === saved) ? saved : 'dashboard') as Page;
+    const saved = getSavedPage() as Page | null;
+    const allowed = new Set<Page>((user?.allowedTabs?.length ? user.allowedTabs : FALLBACK_TABS) as Page[]);
+    if (saved && allowed.has(saved)) return saved;
+    if (allowed.has('dashboard')) return 'dashboard';
+    const first = (user?.allowedTabs?.length ? user.allowedTabs[0] : 'dashboard') as Page;
+    return allowed.has(first) ? first : 'dashboard';
   });
   const [notifOpen, setNotifOpen] = useState(false);
   const { toasts, clearAll } = useNotifications();
@@ -82,30 +115,62 @@ export default function App() {
   useSignalToasts();
 
   useEffect(() => {
+    if (user) {
+      const allowed = new Set((user.allowedTabs?.length ? user.allowedTabs : FALLBACK_TABS) as Page[]);
+      setPage((prev) => {
+        const valid = allowed.has(prev) ? prev : (allowed.has('dashboard') ? 'dashboard' : (PAGES[0]?.id ?? 'dashboard'));
+        return valid as Page;
+      });
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user && !allowedSet.has(page)) {
+      setPage('dashboard');
+    }
+  }, [user, page, allowedSet]);
+
+  useEffect(() => {
     savePage(page);
   }, [page]);
 
-  const setPageSafe = (p: Page) => setPage(p);
+  const setPageSafe = (p: Page) => {
+    if (allowedSet.has(p)) setPage(p);
+  };
   useEffect(() => {
     (window as any).__navigateTo = setPageSafe;
     return () => { delete (window as any).__navigateTo; };
-  }, []);
+  }, [allowedSet]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === '1') { setPage('dashboard'); e.preventDefault(); }
-        else if (e.key === '2') { setPage('signals'); e.preventDefault(); }
-        else if (e.key === '3') { setPage('chart'); e.preventDefault(); }
-        else if (e.key === '4') { setPage('demo'); e.preventDefault(); }
-        else if (e.key === '5') { setPage('autotrade'); e.preventDefault(); }
-        else if (e.key === '6') { setPage('pnl'); e.preventDefault(); }
-        else if (e.key === ',') { setPage('settings'); e.preventDefault(); }
+        const target: Page | null =
+          e.key === '1' ? 'dashboard' : e.key === '2' ? 'signals' : e.key === '3' ? 'chart' :
+          e.key === '4' ? 'demo' : e.key === '5' ? 'autotrade' : e.key === '6' ? 'scanner' :
+          e.key === '7' ? 'pnl' : e.key === ',' ? 'settings' : e.key === '8' ? 'admin' : null;
+        if (target && allowedSet.has(target)) {
+          setPage(target);
+          e.preventDefault();
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [allowedSet]);
+
+  const safePage = allowedSet.has(page) ? page : 'dashboard';
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-base)' }}>
+        <p style={{ color: 'var(--text-muted)' }}>Загрузка…</p>
+      </div>
+    );
+  }
+  if (!user) {
+    return <AuthPage />;
+  }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
@@ -129,17 +194,18 @@ export default function App() {
               key={p.id}
               onClick={() => setPage(p.id)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all relative ${
-                page === p.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                safePage === p.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
               }`}
             >
               {p.label}
-              {page === p.id && (
+              {safePage === p.id && (
                 <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-full" style={{ background: 'var(--accent)' }} />
               )}
             </button>
           ))}
         </nav>
         <div className="flex items-center gap-4">
+          <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{user.username}</span>
           <button
             type="button"
             onClick={() => setNotifOpen(!notifOpen)}
@@ -155,6 +221,14 @@ export default function App() {
                 {Math.min(toasts.length, 99)}
               </span>
             )}
+          </button>
+          <button
+            type="button"
+            onClick={logout}
+            className="px-3 py-1.5 rounded-lg text-sm"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text-secondary)' }}
+          >
+            Выйти
           </button>
         </div>
       </header>
@@ -195,26 +269,32 @@ export default function App() {
       )}
 
       <main className="flex-1 min-h-0 overflow-auto py-8 px-8 md:px-12 lg:px-16">
-        <div className={page === 'dashboard' ? 'block' : 'hidden'}>
+        <div className={safePage === 'dashboard' ? 'block' : 'hidden'}>
           <Dashboard />
         </div>
-        <div className={page === 'signals' ? 'block' : 'hidden'}>
+        <div className={safePage === 'signals' ? 'block' : 'hidden'}>
           <SignalFeed />
         </div>
-        <div className={page === 'chart' ? 'block' : 'hidden'}>
-          {page === 'chart' && <ChartView />}
+        <div className={safePage === 'chart' ? 'block' : 'hidden'}>
+          {safePage === 'chart' && <ChartView />}
         </div>
-        <div className={page === 'demo' ? 'block' : 'hidden'}>
+        <div className={safePage === 'demo' ? 'block' : 'hidden'}>
           <DemoPage />
         </div>
-        <div className={page === 'autotrade' ? 'block' : 'hidden'}>
+        <div className={safePage === 'autotrade' ? 'block' : 'hidden'}>
           <AutoTradingPage />
         </div>
-        <div className={page === 'pnl' ? 'block' : 'hidden'}>
+        <div className={safePage === 'scanner' ? 'block' : 'hidden'}>
+          <ScannerPage />
+        </div>
+        <div className={safePage === 'pnl' ? 'block' : 'hidden'}>
           <PnlCalculatorPage />
         </div>
-        <div className={page === 'settings' ? 'block' : 'hidden'}>
+        <div className={safePage === 'settings' ? 'block' : 'hidden'}>
           <SettingsPage />
+        </div>
+        <div className={safePage === 'admin' ? 'block' : 'hidden'}>
+          <AdminPanel />
         </div>
       </main>
     </div>

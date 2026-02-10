@@ -18,7 +18,7 @@ export class DataAggregator {
       password: okx.hasCredentials && okx.passphrase ? okx.passphrase : undefined,
       enableRateLimit: true,
       options: { defaultType: 'swap' },
-      timeout: 30000
+      timeout: 30000, // OKX /asset/currencies и др. могут отвечать медленно
     };
     const proxyUrl = config.proxy;
     if (proxyUrl) {
@@ -56,7 +56,12 @@ export class DataAggregator {
         }));
       }
     } catch (e) {
-      logger.warn('OKX', 'OHLCV fetch failed', { symbol, error: (e as Error).message });
+      const msg = (e as Error).message;
+      if (!msg?.includes('does not have market symbol')) {
+        logger.warn('OKX', 'OHLCV fetch failed', { symbol, error: msg });
+      } else {
+        logger.debug('OKX', 'OHLCV symbol not on OKX', { symbol });
+      }
     }
     return this.getMockCandles(symbol, timeframe, limit);
   }

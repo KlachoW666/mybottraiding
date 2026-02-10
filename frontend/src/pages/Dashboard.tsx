@@ -5,13 +5,42 @@ import AnalysisBreakdown, { AnalysisBreakdown as BreakdownType } from '../compon
 
 const QUICK_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'BNB-USDT'];
 
+export interface AppStats {
+  orders: {
+    total: number;
+    wins: number;
+    losses: number;
+    totalPnl: number;
+    totalPnlPercent: number;
+    winRate: number;
+    openCount: number;
+  };
+  usersCount: number;
+  volumeEarned: number;
+  status: 'ok' | 'degraded';
+  databaseMode: 'sqlite' | 'memory';
+  okxConnected: boolean;
+}
+
 export default function Dashboard() {
   const [signals, setSignals] = useState<TradingSignal[]>([]);
+  const [stats, setStats] = useState<AppStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [symbol, setSymbol] = useState('BTC-USDT');
   const [tab, setTab] = useState<'overview' | 'signals' | 'stats'>('overview');
   const [lastBreakdown, setLastBreakdown] = useState<BreakdownType | null>(null);
+
+  useEffect(() => {
+    const fetchStats = () => {
+      api.get<AppStats>('/stats')
+        .then(setStats)
+        .catch(() => setStats(null));
+    };
+    fetchStats();
+    const id = setInterval(fetchStats, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     api.get<TradingSignal[]>('/signals?limit=10')
@@ -24,7 +53,11 @@ export default function Dashboard() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'signal') setSignals((prev) => [msg.data, ...prev.slice(0, 9)]);
+        if (msg.type === 'signal' && msg.data) {
+          const payload = msg.data as { signal?: TradingSignal } & TradingSignal;
+          const sig = payload.signal ?? payload;
+          if (sig?.symbol != null) setSignals((prev) => [sig as TradingSignal, ...prev.slice(0, 9)]);
+        }
       } catch {}
     };
     return () => ws.close();
@@ -47,6 +80,46 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
+      {/* Статистика приложения — ордера, пользователи, объём, статус */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="card p-5 md:p-6">
+          <p className="text-sm mb-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>Ордера (всего)</p>
+          <p className="text-2xl md:text-3xl font-bold tracking-tight">
+            {stats?.orders.total ?? '—'}
+          </p>
+          {stats && stats.orders.total > 0 && (
+            <p className="text-sm mt-2 flex items-center gap-2">
+              <span style={{ color: 'var(--success)' }}>+{stats.orders.wins}</span>
+              <span style={{ color: 'var(--text-muted)' }}>/</span>
+              <span style={{ color: 'var(--danger)' }}>-{stats.orders.losses}</span>
+              <span style={{ color: 'var(--text-muted)' }}>• Win rate {stats.orders.winRate}%</span>
+            </p>
+          )}
+        </div>
+        <div className="card p-5 md:p-6">
+          <p className="text-sm mb-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>Пользователей</p>
+          <p className="text-2xl md:text-3xl font-bold tracking-tight" style={{ color: 'var(--accent)' }}>
+            {stats?.usersCount ?? '—'}
+          </p>
+        </div>
+        <div className="card p-5 md:p-6">
+          <p className="text-sm mb-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>Объём заработанных</p>
+          <p className={`text-2xl md:text-3xl font-bold tracking-tight ${(stats?.volumeEarned ?? 0) >= 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]'}`}>
+            {(stats?.volumeEarned ?? 0) >= 0 ? '+' : ''}{(stats?.volumeEarned ?? 0).toFixed(2)} $
+          </p>
+        </div>
+        <div className="card p-5 md:p-6">
+          <p className="text-sm mb-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>Статус приложения</p>
+          <p className="font-medium flex items-center gap-2" style={{ color: stats?.status === 'ok' ? 'var(--success)' : 'var(--warning)' }}>
+            <span className={`w-2 h-2 rounded-full ${stats?.status === 'ok' ? 'bg-[var(--success)] animate-pulse' : 'bg-[var(--warning)]'}`} />
+            {stats?.status === 'ok' ? 'Online' : 'Degraded'}
+          </p>
+          <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+            OKX: {stats?.okxConnected ? 'подключён' : 'нет'} • БД: {stats?.databaseMode === 'sqlite' ? 'SQLite' : 'in-memory'}
+          </p>
+        </div>
+      </section>
+
       {/* Current Balance block — Cryptory style */}
       <div className="card p-6 md:p-8">
         <div className="flex flex-wrap items-start justify-between gap-6">
@@ -175,10 +248,25 @@ export default function Dashboard() {
       )}
 
       {tab === 'stats' && (
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="card p-5 md:p-6">
-            <p className="section-title mb-2">Сигналов</p>
+            <p className="section-title mb-2">Сигналов за сессию</p>
             <p className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>{signals.length}</p>
+          </div>
+          <div className="card p-5 md:p-6">
+            <p className="section-title mb-2">Ордера (прибыль / убыток)</p>
+            <p className="text-sm font-medium">
+              {stats ? (
+                <>
+                  <span style={{ color: 'var(--success)' }}>+{stats.orders.wins}</span>
+                  <span style={{ color: 'var(--text-muted)' }}> / </span>
+                  <span style={{ color: 'var(--danger)' }}>-{stats.orders.losses}</span>
+                  <span className="block mt-1" style={{ color: 'var(--text-muted)' }}>Всего: {stats.orders.total}</span>
+                </>
+              ) : (
+                '—'
+              )}
+            </p>
           </div>
           <div className="card p-5 md:p-6">
             <p className="section-title mb-2">Интеграции</p>
@@ -190,8 +278,9 @@ export default function Dashboard() {
           </div>
           <div className="card p-5 md:p-6">
             <p className="section-title mb-2">Статус</p>
-            <p className="font-medium flex items-center gap-2" style={{ color: 'var(--success)' }}>
-              <span className="w-2 h-2 rounded-full bg-[var(--success)] animate-pulse" /> Online
+            <p className="font-medium flex items-center gap-2" style={{ color: stats?.status === 'ok' ? 'var(--success)' : 'var(--warning)' }}>
+              <span className={`w-2 h-2 rounded-full ${stats?.status === 'ok' ? 'bg-[var(--success)] animate-pulse' : 'bg-[var(--warning)]'}`} />
+              {stats?.status === 'ok' ? 'Online' : 'Degraded'}
             </p>
           </div>
         </section>

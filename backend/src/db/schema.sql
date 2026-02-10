@@ -51,7 +51,63 @@ CREATE TABLE IF NOT EXISTS analysis_history (
     result TEXT
 );
 
+-- Таблица ордеров (все пользователи: демо и реальные)
+CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    pair TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('LONG', 'SHORT')),
+    size REAL NOT NULL,
+    leverage INTEGER NOT NULL DEFAULT 1,
+    open_price REAL NOT NULL,
+    close_price REAL,
+    stop_loss REAL,
+    take_profit TEXT,
+    pnl REAL,
+    pnl_percent REAL,
+    open_time TEXT NOT NULL,
+    close_time TEXT,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed')),
+    auto_opened INTEGER NOT NULL DEFAULT 0,
+    confidence_at_open REAL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_client_id ON orders(client_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_open_time ON orders(open_time);
 CREATE INDEX IF NOT EXISTS idx_signals_pair ON signals(pair);
 CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_demo_trades_status ON demo_trades(status);
+
+-- Группы и доступ к вкладкам (Super-Admin)
+CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    allowed_tabs TEXT NOT NULL DEFAULT '[]'
+);
+INSERT OR IGNORE INTO groups (id, name, allowed_tabs) VALUES
+(1, 'user', '["dashboard","settings"]'),
+(2, 'viewer', '["dashboard","signals","chart"]'),
+(3, 'admin', '["dashboard","signals","chart","demo","autotrade","scanner","pnl","settings","admin"]');
+
+-- Пользователи (регистрация без подтверждения почты)
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    group_id INTEGER NOT NULL DEFAULT 1,
+    proxy_url TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_group_id ON users(group_id);
+
+-- Сессии (токен -> user_id)
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);

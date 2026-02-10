@@ -35,5 +35,15 @@ export const api = {
       ...options
     });
     return handleResponse<T>(res);
+  },
+
+  async patch<T>(path: string, body?: unknown, options?: RequestInit): Promise<T> {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...options?.headers },
+      body: body != null ? JSON.stringify(body) : undefined,
+      ...options
+    });
+    return handleResponse<T>(res);
   }
 };

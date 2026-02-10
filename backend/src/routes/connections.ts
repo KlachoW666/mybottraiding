@@ -4,11 +4,12 @@ import { config } from '../config';
 
 const router = Router();
 
-function okxOpts(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  const proxyUrl = config.proxy;
+function okxOpts(proxyOverride?: string | null, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const proxyUrl = (proxyOverride && proxyOverride.trim()) || config.proxy;
   const opts: Record<string, unknown> = {
     enableRateLimit: true,
     options: { defaultType: 'swap' },
+    timeout: 30000, // OKX иногда медленно отвечает, особенно /asset/currencies
     ...extra
   };
   if (proxyUrl) {
@@ -48,11 +49,12 @@ router.post('/check', async (req, res) => {
       const key = (apiKey || process.env.OKX_API_KEY || '').trim();
       const secret = (apiSecret || process.env.OKX_SECRET || '').trim();
       const passphrase = (req.body?.passphrase as string) || process.env.OKX_PASSPHRASE || '';
+      const proxy = (req.body?.proxy as string)?.trim() || null; // http://user:pass@ip:port
       if (!key || !secret) {
         res.status(400).json({ ok: false, message: 'API Key и Secret обязательны для OKX' });
         return;
       }
-      const ex = new ccxt.okx(okxOpts({
+      const ex = new ccxt.okx(okxOpts(proxy, {
         apiKey: key,
         secret,
         password: passphrase
@@ -69,9 +71,10 @@ router.post('/check', async (req, res) => {
   }
 });
 
-router.get('/test-public', async (_req, res) => {
+router.get('/test-public', async (req, res) => {
   try {
-    const ex = new ccxt.okx(okxOpts());
+    const proxy = (req.query?.proxy as string)?.trim() || null;
+    const ex = new ccxt.okx(okxOpts(proxy));
     await ex.fetchTicker('BTC/USDT:USDT');
     res.json({ ok: true, message: 'OKX публичный API доступен' });
   } catch (e: any) {

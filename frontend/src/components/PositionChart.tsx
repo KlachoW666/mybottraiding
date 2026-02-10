@@ -32,6 +32,12 @@ interface PositionChartProps {
   live?: boolean;
 }
 
+/** Нормализация символа для API: всегда BASE-USDT */
+function chartSymbol(s: string): string {
+  if (!s) return '';
+  return s.replace(/:USDT$/i, '').replace(/\//g, '-');
+}
+
 export default function PositionChart({
   symbol,
   timeframe = '5m',
@@ -41,10 +47,13 @@ export default function PositionChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const symbolRef = useRef(symbol);
+  symbolRef.current = symbol;
 
   useEffect(() => {
     if (!containerRef.current || !symbol) return;
     const el = containerRef.current;
+    const requestedSymbol = chartSymbol(symbol);
     const chart = createChart(el, {
       layout: { background: { color: 'transparent' }, textColor: 'rgba(255,255,255,0.6)' },
       grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
@@ -63,10 +72,11 @@ export default function PositionChart({
     seriesRef.current = candlestickSeries;
 
     const loadCandles = (isInitial: boolean) => {
-      const sym = symbol.replace(/_/g, '-');
+      const sym = requestedSymbol || chartSymbol(symbol);
       fetch(`${API}/market/candles/${encodeURIComponent(sym)}?timeframe=${timeframe}&limit=100&exchange=okx`)
         .then((r) => r.json())
         .then((data) => {
+          if (symbolRef.current !== symbol) return;
           const candles = Array.isArray(data) ? data : [];
           if (!candles.length || !seriesRef.current) return;
           const candleData: CandlestickData[] = candles.map((c: OHLCVCandle) => ({
@@ -96,9 +106,8 @@ export default function PositionChart({
     if (live) {
       const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
       ws = new WebSocket(wsUrl);
-      const sym = symbol.replace(/_/g, '-');
       ws.onopen = () => {
-        ws?.send(JSON.stringify({ type: 'subscribe_candle', symbol: sym, timeframe }));
+        ws?.send(JSON.stringify({ type: 'subscribe_candle', symbol: requestedSymbol, timeframe }));
       };
       ws.onmessage = (e) => {
         try {
@@ -133,7 +142,7 @@ export default function PositionChart({
       if (intervalId) clearInterval(intervalId);
       if (ws) {
         try {
-          ws.send(JSON.stringify({ type: 'unsubscribe_candle', symbol: symbol.replace(/_/g, '-'), timeframe }));
+          ws.send(JSON.stringify({ type: 'unsubscribe_candle', symbol: requestedSymbol, timeframe }));
         } catch {}
         ws.close();
       }

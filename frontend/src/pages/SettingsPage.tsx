@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getSettings, updateSettings, type Settings } from '../store/settingsStore';
+import { useAuth } from '../contexts/AuthContext';
 
 type SettingsTab = 'connections' | 'analysis' | 'notifications' | 'display' | 'risk';
 
@@ -14,14 +15,19 @@ const TABS: { id: SettingsTab; label: string; icon: string }[] = [
 const API = '/api';
 
 export default function SettingsPage() {
+  const { user, updateProxy } = useAuth();
   const [activeTab, setActiveTab] = useState<SettingsTab>('connections');
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [connStatus, setConnStatus] = useState<Record<string, { ok?: boolean; msg?: string; checking?: boolean }>>({});
   const [tgTestStatus, setTgTestStatus] = useState<{ ok?: boolean; msg?: string; testing?: boolean }>({});
 
   useEffect(() => {
+    const s = getSettings();
+    if (user?.proxyUrl !== undefined && s.connections.proxy !== user.proxyUrl) {
+      updateSettings({ connections: { ...s.connections, proxy: user.proxyUrl ?? '' } });
+    }
     setSettings(getSettings());
-  }, []);
+  }, [user?.proxyUrl]);
 
   const update = (partial: Partial<Settings>) => {
     updateSettings(partial);
@@ -40,6 +46,7 @@ export default function SettingsPage() {
     setConnStatus((s) => ({ ...s, okx: { checking: true } }));
     try {
       const conn = settings.connections.okx;
+      const proxy = (settings.connections.proxy ?? user?.proxyUrl ?? '').trim() || undefined;
       const res = await fetch(`${API}/connections/check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -47,7 +54,8 @@ export default function SettingsPage() {
           exchange: 'OKX',
           apiKey: conn.apiKey,
           apiSecret: conn.apiSecret,
-          passphrase: conn.passphrase
+          passphrase: conn.passphrase,
+          proxy
         })
       });
       const data = await res.json();
@@ -166,6 +174,20 @@ export default function SettingsPage() {
                       value={settings.connections.okx.passphrase}
                       onChange={(e) => update({ connections: { ...settings.connections, okx: { ...settings.connections.okx, passphrase: e.target.value } } })}
                       placeholder="Задаётся при создании ключа"
+                      className="input-field"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1" style={{ color: 'var(--text-muted)' }}>Прокси (для каждого пользователя)</label>
+                    <input
+                      type="text"
+                      value={settings.connections.proxy ?? ''}
+                      onChange={(e) => update({ connections: { ...settings.connections, proxy: e.target.value } })}
+                      onBlur={() => {
+                        const v = (settings.connections.proxy ?? '').trim();
+                        updateProxy(v || null);
+                      }}
+                      placeholder="http://user:pass@ip:port"
                       className="input-field"
                     />
                   </div>

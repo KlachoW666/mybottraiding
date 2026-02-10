@@ -1,6 +1,13 @@
 /**
  * Формат торгового сигнала (раздел 6 ТЗ)
  */
+/** Конфиг трейлинг-стопа (MaksBaks 11.3) */
+export interface TrailingStopConfigSignal {
+  initial_stop: number;       // начальный стоп (цена)
+  trail_step_pct: number;     // 0.003 = 0.3%
+  activation_profit_pct: number; // 0.01 = 1%
+}
+
 export interface TradingSignal {
   id: string;
   timestamp: string;
@@ -15,6 +22,8 @@ export interface TradingSignal {
   timeframe: string;
   triggers: string[];
   expires_at: string;
+  /** Трейлинг-стоп: активация после TP1 или +1% прибыли */
+  trailing_stop_config?: TrailingStopConfigSignal;
 }
 
 export type ConfidenceLevel = 'high' | 'medium' | 'low';

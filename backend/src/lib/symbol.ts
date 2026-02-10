@@ -3,24 +3,30 @@
  * OKX futures: BTC-USDT-SWAP, instId: BTC-USDT-SWAP
  */
 
+/** Маппинг символов для OKX (переименования/отсутствующие пары) */
+const OKX_SYMBOL_MAP: Record<string, string> = {
+  MATIC: 'POL' // Polygon rebrand на OKX
+};
+
 /**
  * Normalize to internal format: BTC-USDT (always with hyphen)
  */
 export function normalizeSymbol(symbol: string): string {
   if (!symbol || typeof symbol !== 'string') return '';
-  const s = symbol.replace(/\s/g, '').replace(/_/g, '-').replace(/-SWAP$/i, '').toUpperCase();
-  if (s.includes('/')) return s.replace('/', '-');
-  if (s.endsWith('USDT') && !s.includes('-')) return s.slice(0, -4) + '-USDT';
+  let s = symbol.replace(/\s/g, '').replace(/_/g, '-').replace(/-SWAP$/i, '').replace(/:USDT$/i, '').toUpperCase();
+  if (s.includes('/')) s = s.replace('/', '-');
+  if (s.endsWith('USDT') && !s.includes('-')) s = s.slice(0, -4) + '-USDT';
   return s;
 }
 
 /**
- * Convert to OKX ccxt format: BTC/USDT:USDT
+ * Convert to OKX ccxt format: BTC/USDT:USDT (с учётом маппинга для OKX)
  */
 export function toOkxCcxtSymbol(symbol: string): string {
   const s = normalizeSymbol(symbol);
   if (!s || !s.includes('-')) return '';
-  const [base, quote] = s.split('-');
+  let [base, quote] = s.split('-');
+  base = OKX_SYMBOL_MAP[base] ?? base;
   return `${base}/${quote}:USDT`;
 }
 

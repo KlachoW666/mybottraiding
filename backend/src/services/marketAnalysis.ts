@@ -192,6 +192,29 @@ export function analyzeOrderBook(ob: OrderBookInput): OrderBookResult {
   };
 }
 
+/** Давление стакана на пробой уровня (MaksBaks: стакан подтверждает пробой) */
+export function detectBreakoutPressure(
+  ob: OrderBookInput,
+  level: number,
+  direction: 'up' | 'down'
+): { pressure: number; confidence: number } {
+  const bids = ob.bids || [];
+  const asks = ob.asks || [];
+  if (!bids.length || !asks.length) return { pressure: 1, confidence: 0.5 };
+  const threshold = level * 0.005;
+  const bidVol = bids.filter(([p]) => Math.abs(p - level) <= threshold).reduce((s, [, a]) => s + a, 0);
+  const askVol = asks.filter(([p]) => Math.abs(p - level) <= threshold).reduce((s, [, a]) => s + a, 0);
+  const total = bidVol + askVol;
+  if (total <= 0) return { pressure: 1, confidence: 0.5 };
+  if (direction === 'up') {
+    const pressure = askVol > 0 ? bidVol / askVol : 2;
+    return { pressure, confidence: pressure >= 2 ? 0.8 : pressure >= 1.2 ? 0.6 : 0.5 };
+  } else {
+    const pressure = bidVol > 0 ? askVol / bidVol : 2;
+    return { pressure, confidence: pressure >= 2 ? 0.8 : pressure >= 1.2 ? 0.6 : 0.5 };
+  }
+}
+
 /** PDF: вес сделки по объёму USDT — SMALL x1, MEDIUM x2, LARGE x5, WHALE x10 */
 function tradeWeight(quoteUsdt: number): number {
   if (quoteUsdt >= TAPE_LARGE) return 10;
@@ -369,7 +392,18 @@ const PATTERN_WEIGHTS: Record<string, { bull: number; bear: number }> = {
   bearish_harami: { bull: 0, bear: 1 },
   piercing_line: { bull: 2, bear: 0 },
   dark_cloud_cover: { bull: 0, bear: 2 },
-  doji: { bull: 1, bear: 1 }
+  doji: { bull: 1, bear: 1 },
+  // Freqtrade-strategies: BinHV45, Cluc, HLHB, VolatilitySystem, Supertrend
+  binhv45_lower_bb_reversal: { bull: 2, bear: 0 },
+  cluc_low_volume_dip: { bull: 2, bear: 0 },
+  hlhb_ema_rsi_cross: { bull: 2, bear: 0 },
+  hlhb_ema_rsi_cross_bear: { bull: 0, bear: 2 },
+  volatility_breakout: { bull: 2, bear: 0 },
+  volatility_breakout_bear: { bull: 0, bear: 2 },
+  adx_trend: { bull: 1, bear: 1 },
+  emarsi_oversold: { bull: 2, bear: 0 },
+  supertrend_up: { bull: 1, bear: 0 },
+  supertrend_down: { bull: 0, bear: 1 }
 };
 
 export interface CandlesAnalysisInput {
@@ -535,6 +569,7 @@ export interface DeepAnalysisOptions {
   obDomScore?: number;     // DOM score стакана
   cvdDivergence?: 'bullish' | 'bearish' | null;
   highVolatility?: boolean; // Antonopoulos: Panic Noise — снижение confidence при резком движении
+  falseBreakoutHint?: boolean; // Nison: 24/7 крипто — пробой без объёма = возможный ложный пробой
 }
 
 /**
@@ -639,6 +674,11 @@ export function computeSignal(
   // Panic Noise (Antonopoulos): высокая волатильность — осторожность при входе
   if (options?.highVolatility) {
     confidence = Math.max(0.52, confidence - 0.05);
+  }
+
+  // Nison (Japanese Candles): 24/7 крипто — пробой без объёма = возможный ложный пробой
+  if (options?.falseBreakoutHint) {
+    confidence = Math.max(0.52, confidence - 0.06);
   }
 
   if (confidence < 0.6) {
