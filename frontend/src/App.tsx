@@ -7,6 +7,7 @@ import AutoTradingPage from './pages/AutoTradingPage';
 import SettingsPage from './pages/SettingsPage';
 import PnlCalculatorPage from './pages/PnlCalculatorPage';
 import ScannerPage from './pages/ScannerPage';
+import ActivatePage from './pages/ActivatePage';
 import AdminPanel from './pages/AdminPanel';
 import AuthPage from './pages/AuthPage';
 import { getSavedPage, savePage } from './store/appStore';
@@ -14,7 +15,7 @@ import { useNotifications } from './contexts/NotificationContext';
 import { useAuth } from './contexts/AuthContext';
 import { getSettings } from './store/settingsStore';
 
-type Page = 'dashboard' | 'signals' | 'chart' | 'demo' | 'autotrade' | 'scanner' | 'pnl' | 'settings' | 'admin';
+type Page = 'dashboard' | 'signals' | 'chart' | 'demo' | 'autotrade' | 'scanner' | 'pnl' | 'settings' | 'activate' | 'admin';
 
 const ALL_PAGES: { id: Page; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Обзор', icon: '◉' },
@@ -25,6 +26,7 @@ const ALL_PAGES: { id: Page; label: string; icon: string }[] = [
   { id: 'scanner', label: 'Скринер', icon: '▤' },
   { id: 'pnl', label: 'PNL', icon: '💰' },
   { id: 'settings', label: 'Настройки', icon: '⚙' },
+  { id: 'activate', label: 'Активировать', icon: '🔑' },
   { id: 'admin', label: 'Админ', icon: '🎛' }
 ];
 
@@ -148,7 +150,7 @@ export default function App() {
         const target: Page | null =
           e.key === '1' ? 'dashboard' : e.key === '2' ? 'signals' : e.key === '3' ? 'chart' :
           e.key === '4' ? 'demo' : e.key === '5' ? 'autotrade' : e.key === '6' ? 'scanner' :
-          e.key === '7' ? 'pnl' : e.key === ',' ? 'settings' : e.key === '8' ? 'admin' : null;
+          e.key === '7' ? 'pnl' : e.key === ',' ? 'settings' : e.key === '9' ? 'activate' : e.key === '8' ? 'admin' : null;
         if (target && allowedSet.has(target)) {
           setPage(target);
           e.preventDefault();
@@ -292,6 +294,9 @@ export default function App() {
         </div>
         <div className={safePage === 'settings' ? 'block' : 'hidden'}>
           <SettingsPage />
+        </div>
+        <div className={safePage === 'activate' ? 'block' : 'hidden'}>
+          <ActivatePage />
         </div>
         <div className={safePage === 'admin' ? 'block' : 'hidden'}>
           <AdminPanel />

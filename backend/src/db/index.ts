@@ -77,6 +77,26 @@ export function initDb(): any {
       const sql = fs.readFileSync(schemaPath, 'utf8');
       db.exec(sql);
     }
+    // Lightweight migrations (safe on already-migrated DB)
+    try {
+      db.prepare('ALTER TABLE users ADD COLUMN activation_expires_at TEXT').run();
+    } catch {}
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS activation_keys (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          key TEXT NOT NULL UNIQUE,
+          duration_days INTEGER NOT NULL,
+          note TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          used_by_user_id TEXT,
+          used_at TEXT,
+          revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_activation_keys_key ON activation_keys(key);
+        CREATE INDEX IF NOT EXISTS idx_activation_keys_used ON activation_keys(used_at);
+      `);
+    } catch {}
     return db;
   } catch {
     useMemoryStore = true;

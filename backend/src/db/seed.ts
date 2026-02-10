@@ -11,7 +11,7 @@ import { findUserByUsername, createUser, updateGroupTabs } from './authDb';
 const ADMIN_LOGIN = 'CryptoSignalPro';
 const ADMIN_PASSWORD = 'Qqwdsaqe2123!fade!CryptoSignalPro228';
 const ADMIN_GROUP_ID = 3;
-const DEFAULT_USER_TABS = '["dashboard","settings"]';
+const DEFAULT_USER_TABS = '["dashboard","settings","activate"]';
 
 export function seedDefaultAdmin(): void {
   updateGroupTabs(1, DEFAULT_USER_TABS);

@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS groups (
     allowed_tabs TEXT NOT NULL DEFAULT '[]'
 );
 INSERT OR IGNORE INTO groups (id, name, allowed_tabs) VALUES
-(1, 'user', '["dashboard","settings"]'),
+(1, 'user', '["dashboard","settings","activate"]'),
 (2, 'viewer', '["dashboard","signals","chart"]'),
 (3, 'admin', '["dashboard","signals","chart","demo","autotrade","scanner","pnl","settings","admin"]');
 
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     group_id INTEGER NOT NULL DEFAULT 1,
     proxy_url TEXT,
+    activation_expires_at TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -111,3 +112,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+-- Ключи активации (Super-Admin генерирует, пользователь активирует)
+CREATE TABLE IF NOT EXISTS activation_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    duration_days INTEGER NOT NULL,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    used_by_user_id TEXT,
+    used_at TEXT,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activation_keys_key ON activation_keys(key);
+CREATE INDEX IF NOT EXISTS idx_activation_keys_used ON activation_keys(used_at);
+
+-- Pro группа (после активации). Вкладка activate доступна всегда.
+INSERT OR IGNORE INTO groups (id, name, allowed_tabs) VALUES
+(4, 'pro', '["dashboard","signals","chart","demo","autotrade","scanner","pnl","settings","activate"]');

@@ -1,141 +1,146 @@
 #!/bin/bash
-# CryptoSignal Pro — автоматическая установка на VPS (Ubuntu 24.04)
-# Запуск: загрузите проект на VPS, затем: chmod +x install.sh && sudo ./install.sh
+# CryptoSignal Pro — авто‑установка под Debian 12 (и Ubuntu 22+/24+)
+# Клонирование/обновление репозитория, установка Node.js, PM2, сборка и запуск.
+#
+# Запуск (рекомендуемый):
+#   sudo ./install.sh /root/opt/cryptosignal
+#
+# Переменные окружения (опционально):
+#   GIT_REPO   — URL репозитория (по умолчанию GitHub проекта)
+#   APP_PORT   — порт приложения (по умолчанию 3000)
+#   PROJECT_DIR — каталог установки, если не передаётся аргументом
 
-set -e
+set -euo pipefail
 
-DOMAIN="cryptosignalpro.titanrust.ru"
-APP_PORT="3000"
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
-export NODE_ENV=production
-export PORT="$APP_PORT"
+export DEBIAN_FRONTEND=noninteractive
+export NPM_CONFIG_YES=true
 
-log() { echo "[CryptoSignal] $*"; }
-err() { echo "[CryptoSignal ERROR] $*" >&2; }
+GIT_REPO="${GIT_REPO:-https://github.com/KlachoW666/GavnoshkaImpalustiankasd.git}"
+APP_PORT="${APP_PORT:-3000}"
+INSTALL_DIR="${1:-${PROJECT_DIR:-/root/opt/cryptosignal}}"
 
-# Проверка: root или sudo
+log() { echo "[CryptoSignal][install] $*"; }
+err() { echo "[CryptoSignal][install][ERROR] $*" >&2; }
+
 if [ "$(id -u)" -ne 0 ]; then
-  err "Запустите скрипт с sudo: sudo ./install.sh"
+  err "Запустите скрипт от root: sudo ./install.sh /root/opt/cryptosignal"
   exit 1
 fi
 
-log "Корень проекта: $PROJECT_ROOT"
-if [ ! -f "$PROJECT_ROOT/package.json" ] || [ ! -d "$PROJECT_ROOT/backend" ]; then
-  err "Не найден корень проекта (package.json, backend/). Запускайте install.sh из корня репозитория."
-  exit 1
+RUN_USER="${SUDO_USER:-root}"
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+
+# Абсолютный путь для INSTALL_DIR
+if [ "${INSTALL_DIR#/}" = "$INSTALL_DIR" ]; then
+  INSTALL_DIR="$(pwd)/$INSTALL_DIR"
 fi
 
-# 1. Обновление системы
-log "Обновление системы..."
+log "Целевой каталог установки: $INSTALL_DIR (пользователь: $RUN_USER)"
+
+log "Обновление системы и установка базовых пакетов (git, curl, ca-certificates)..."
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+apt-get upgrade -y -qq
+apt-get install -y -qq git curl ca-certificates
 
-# 2. Node.js 20
-if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
-  log "Установка Node.js 20..."
-  apt-get install -y -qq curl
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -s -- -qq
+# Клонирование / обновление репозитория
+log "Клонирование/обновление репозитория из $GIT_REPO..."
+mkdir -p "$(dirname "$INSTALL_DIR")"
+if [ -d "$INSTALL_DIR/.git" ]; then
+  log "Репозиторий уже существует, выполняю git fetch/reset..."
+  (cd "$INSTALL_DIR" && git fetch origin && git reset --hard origin/main)
+elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+  log "Каталог существует и не пуст — временное клонирование и копирование файлов..."
+  TMP_CLONE="$(mktemp -d)"
+  git clone --depth 1 "$GIT_REPO" "$TMP_CLONE"
+  cp -a "$TMP_CLONE"/. "$INSTALL_DIR"
+  rm -rf "$TMP_CLONE"
+else
+  git clone --depth 1 "$GIT_REPO" "$INSTALL_DIR"
+fi
+
+PROJECT_ROOT="$INSTALL_DIR"
+if [ ! -f "$PROJECT_ROOT/package.json" ] || [ ! -d "$PROJECT_ROOT/backend" ] || [ ! -d "$PROJECT_ROOT/frontend" ]; then
+  err "После клонирования не найден корень проекта (package.json, backend/, frontend/). Проверьте репозиторий."
+  exit 1
+fi
+
+chown -R "$RUN_USER:$RUN_USER" "$PROJECT_ROOT" 2>/dev/null || true
+log "Корень проекта: $PROJECT_ROOT"
+
+# Установка Node.js 20 под Debian 12 / Ubuntu
+if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
+  log "Установка Node.js 20 (через NodeSource)..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -s -- -y
   apt-get install -y -qq nodejs
 fi
 log "Node: $(node -v) npm: $(npm -v)"
 
-# 3. PM2
-if ! command -v pm2 &>/dev/null; then
-  log "Установка PM2..."
+# PM2
+if ! command -v pm2 >/dev/null 2>&1; then
+  log "Установка PM2 (глобально)..."
   npm install -g pm2 --silent
 fi
 log "PM2: $(pm2 -v)"
 
-# 4. Зависимости и сборка приложения (от имени пользователя, чтобы владельцем был не root)
-RUN_USER="${SUDO_USER:-root}"
-log "Установка зависимостей и сборка (пользователь: $RUN_USER)..."
+# Установка зависимостей и сборка
+log "Установка зависимостей backend/frontend и сборка (это может занять 5–15 минут)..."
 cd "$PROJECT_ROOT"
 chown -R "$RUN_USER:$RUN_USER" . 2>/dev/null || true
 
-if [ -f backend/package-lock.json ]; then
-  sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT/backend && npm ci --omit=dev"
-else
-  sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT/backend && npm install --omit=dev"
-fi
+log "Backend: чистая установка пакетов..."
+cd "$PROJECT_ROOT/backend"
+rm -rf node_modules package-lock.json
+NODE_ENV=development NPM_CONFIG_YES=true npm install --include=dev --no-fund --no-audit
 
-if [ -f frontend/package-lock.json ]; then
-  sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT/frontend && npm ci"
-else
-  sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT/frontend && npm install"
-fi
+log "Frontend: чистая установка пакетов..."
+cd "$PROJECT_ROOT/frontend"
+rm -rf node_modules package-lock.json
+NODE_ENV=development NPM_CONFIG_YES=true npm install --include=dev --no-fund --no-audit
 
-sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT && npm run build"
+log "Сборка backend и frontend через npm run build..."
+cd "$PROJECT_ROOT"
+npm run build
 
-# 5. .env
+# backend/.env
+cd "$PROJECT_ROOT"
 if [ ! -f backend/.env ]; then
-  log "Создание backend/.env из .env.example..."
+  log "Создание backend/.env из backend/.env.example (если есть)..."
   if [ -f backend/.env.example ]; then
     cp backend/.env.example backend/.env
-    sed -i "s/^NODE_ENV=.*/NODE_ENV=production/" backend/.env
-    sed -i "s/^PORT=.*/PORT=$APP_PORT/" backend/.env
-    chown "$RUN_USER:$RUN_USER" backend/.env 2>/dev/null || true
-    log "Отредактируйте backend/.env: OKX ключи, PROXY_LIST, ADMIN_PASSWORD"
   else
-    echo "PORT=$APP_PORT" > backend/.env
-    echo "NODE_ENV=production" >> backend/.env
-    chown "$RUN_USER:$RUN_USER" backend/.env 2>/dev/null || true
+    touch backend/.env
   fi
-else
-  log "backend/.env уже существует, не трогаем"
+  sed -i "s/^NODE_ENV=.*/NODE_ENV=production/" backend/.env 2>/dev/null || echo "NODE_ENV=production" >> backend/.env
+  sed -i "s/^PORT=.*/PORT=$APP_PORT/" backend/.env 2>/dev/null || echo "PORT=$APP_PORT" >> backend/.env
+  chown "$RUN_USER:$RUN_USER" backend/.env 2>/dev/null || true
 fi
 
-# 6. Nginx
-log "Настройка Nginx для $DOMAIN..."
-apt-get install -y -qq nginx
-NGINX_CONF="/etc/nginx/sites-available/cryptosignal"
-cat > "$NGINX_CONF" << 'NGINX_EOF'
-server {
-    listen 80;
-    server_name cryptosignalpro.titanrust.ru;
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-NGINX_EOF
-sed -i "s/cryptosignalpro.titanrust.ru/$DOMAIN/" "$NGINX_CONF"
-sed -i "s/127.0.0.1:3000/127.0.0.1:$APP_PORT/" "$NGINX_CONF"
-
-if [ ! -L /etc/nginx/sites-enabled/cryptosignal ]; then
-  ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/cryptosignal
-fi
-nginx -t && systemctl reload nginx
-log "Nginx: конфиг создан и перезагружен"
-
-# 7. PM2: запуск приложения
+# PM2: запуск и автозапуск
 log "Запуск приложения через PM2..."
-cd "$PROJECT_ROOT"
-sudo -u "$RUN_USER" env NODE_ENV=production PORT="$APP_PORT" pm2 delete cryptosignal 2>/dev/null || true
-sudo -u "$RUN_USER" sh -c "cd $PROJECT_ROOT && NODE_ENV=production PORT=$APP_PORT pm2 start ecosystem.config.js --env production"
-sudo -u "$RUN_USER" pm2 save
-sudo -u "$RUN_USER" pm2 startup systemd -u "$RUN_USER" --hp "$(eval echo ~$RUN_USER)" 2>/dev/null || true
+pm2 delete cryptosignal 2>/dev/null || true
+NODE_ENV=production PORT="$APP_PORT" pm2 start ecosystem.config.js --env production
+pm2 save
 
-# 8. Итог
-log "Проверка здоровья API..."
-sleep 2
-if curl -sf "http://127.0.0.1:$APP_PORT/api/health" >/dev/null; then
-  log "API отвечает на порту $APP_PORT"
-else
-  err "API пока не ответил. Проверьте: pm2 logs cryptosignal"
-fi
+log "Настройка systemd для автозапуска PM2..."
+env PATH="$PATH" pm2 startup systemd -u "$RUN_USER" --hp "$RUN_HOME" >/dev/null 2>&1 || true
 
-echo ""
+# Быстрая проверка API
+log "Проверка API на http://127.0.0.1:$APP_PORT/api/health ..."
+apt-get install -y -qq curl >/dev/null 2>&1 || true
+for i in 1 2 3 4 5; do
+  if curl -sf "http://127.0.0.1:$APP_PORT/api/health" >/dev/null 2>&1; then
+    log "API отвечает на порту $APP_PORT"
+    break
+  fi
+  [ "$i" -eq 5 ] && err "API не ответил за 10 секунд. Проверьте: pm2 logs cryptosignal"
+  sleep 2
+done
+
+echo
 log "Установка завершена."
-echo "  Сайт:    http://$DOMAIN"
-echo "  Логи:    pm2 logs cryptosignal"
-echo "  Статус:  pm2 status"
-echo "  .env:    отредактируйте $PROJECT_ROOT/backend/.env (OKX, прокси, пароль админки)"
-echo ""
-echo "  HTTPS (опционально): sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d $DOMAIN"
-echo ""
+echo "  Порт API: http://127.0.0.1:$APP_PORT"
+echo "  PM2:      pm2 status && pm2 logs cryptosignal"
+echo "  .env:     $PROJECT_ROOT/backend/.env (OKX, прокси и т.д.)"
+echo "  Домены и Nginx: запускайте отдельно скрипт domain.sh"
+echo
+

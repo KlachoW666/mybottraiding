@@ -6,7 +6,7 @@ import { Router, Request, Response } from 'express';
 import { getDashboardData, validateAdminPassword, createAdminToken, validateAdminToken } from '../services/adminService';
 import { stopAutoAnalyze } from './market';
 import { listOrders } from '../db';
-import { listUsers, listGroups, updateUserGroup, updateGroupTabs } from '../db/authDb';
+import { listUsers, listGroups, updateUserGroup, updateGroupTabs, createActivationKeys, listActivationKeys, revokeActivationKey } from '../db/authDb';
 import { getSignals } from './signals';
 import { logger, getRecentLogs } from '../lib/logger';
 
@@ -229,6 +229,69 @@ router.put('/groups/:id', requireAdmin, (req: Request, res: Response) => {
     }
     updateGroupTabs(groupId, JSON.stringify(allowedTabs));
     res.json({ ok: true, groupId, allowedTabs });
+  } catch (e) {
+    logger.error('Admin', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** ——— Super-Admin: ключи активации ——— */
+
+/** GET /api/admin/activation-keys — список ключей */
+router.get('/activation-keys', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 500, 2000);
+    const keys = listActivationKeys(limit).map((k) => ({
+      id: k.id,
+      key: k.key,
+      durationDays: k.duration_days,
+      note: k.note,
+      createdAt: k.created_at,
+      usedByUserId: k.used_by_user_id,
+      usedAt: k.used_at,
+      revokedAt: k.revoked_at
+    }));
+    res.json(keys);
+  } catch (e) {
+    logger.error('Admin', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** POST /api/admin/activation-keys/generate — генерация ключей */
+router.post('/activation-keys/generate', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const durationDays = parseInt(req.body?.durationDays as string, 10);
+    const count = req.body?.count != null ? parseInt(req.body.count as string, 10) : 1;
+    const note = req.body?.note != null ? String(req.body.note) : null;
+    if (!Number.isFinite(durationDays) || durationDays < 1) {
+      res.status(400).json({ error: 'durationDays обязателен (число >= 1)' });
+      return;
+    }
+    const keys = createActivationKeys({ durationDays, count, note }).map((k) => ({
+      id: k.id,
+      key: k.key,
+      durationDays: k.duration_days,
+      note: k.note,
+      createdAt: k.created_at
+    }));
+    res.json({ ok: true, keys });
+  } catch (e) {
+    logger.error('Admin', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** POST /api/admin/activation-keys/:id/revoke — отзыв ключа */
+router.post('/activation-keys/:id/revoke', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id < 1) {
+      res.status(400).json({ error: 'Некорректный id' });
+      return;
+    }
+    revokeActivationKey(id);
+    res.json({ ok: true, id });
   } catch (e) {
     logger.error('Admin', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });

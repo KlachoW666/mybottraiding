@@ -8,27 +8,39 @@
 
 ## 0. Быстрая установка (один скрипт)
 
-Если проект уже загружен на VPS (git clone или rsync), можно поставить всё одной командой:
+Скрипт **install.sh** сам клонирует приложение с GitHub и настраивает всё. На VPS нужен только сам скрипт.
+
+**Вариант A — скрипт уже на VPS (например, в /root):**
 
 ```bash
-cd /opt/cryptosignal   # или путь к корню проекта
+chmod +x install.sh
+sudo ./install.sh                    # клонирует в /root/opt/cryptosignal
+# или в свой каталог:
+sudo ./install.sh /opt/cryptosignal
+```
+
+**Вариант B — скачать скрипт одной командой и запустить:**
+
+```bash
+curl -sSL -o install.sh "https://raw.githubusercontent.com/KlachoW666/GavnoshkaImpalustiankasd/main/install.sh"
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-Скрипт **install.sh** автоматически:
+Скрипт **install.sh** по шагам:
 
-- обновляет систему и ставит Node.js 20, PM2, nginx;
-- ставит зависимости backend/frontend и собирает проект (от имени вашего пользователя);
-- создаёт **backend/.env** из `backend/.env.example`, если его нет (PORT=3000, NODE_ENV=production);
-- настраивает nginx для домена **cryptosignalpro.titanrust.ru** (прокси на `http://127.0.0.1:3000`);
-- запускает приложение через PM2 (`cryptosignal`), сохраняет и настраивает автозапуск.
+1. Обновляет систему, ставит **git**.
+2. **Клонирует** репозиторий (по умолчанию `GavnoshkaImpalustiankasd`) в указанный каталог (по умолчанию `/root/opt/cryptosignal`). При повторном запуске делает `git pull`.
+3. Ставит Node.js 20, PM2, nginx.
+4. Ставит зависимости и собирает проект.
+5. Создаёт **backend/.env** из `.env.example`, если его нет.
+6. Настраивает nginx для **cryptosignalpro.titanrust.ru** (прокси на порт 3000).
+7. Запускает приложение через PM2 и настраивает автозапуск.
 
-После установки:
+Переменные (опционально): `GIT_REPO=...` — другой репозиторий; каталог — первый аргумент или `PROJECT_DIR`.
 
-- отредактируйте **backend/.env** (OKX ключи, прокси, пароль админки);
-- при необходимости включите HTTPS:  
-  `sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d cryptosignalpro.titanrust.ru`
+После установки отредактируйте **backend/.env** (OKX, прокси, пароль). HTTPS:  
+`sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d cryptosignalpro.titanrust.ru`
 
 Логи: `pm2 logs cryptosignal`, статус: `pm2 status`.
 

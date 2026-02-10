@@ -3,7 +3,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 const API = '/api';
 const TOKEN_KEY = 'cryptosignal-auth-token';
 
-const DEFAULT_ALLOWED_TABS = ['dashboard', 'settings'];
+const DEFAULT_ALLOWED_TABS = ['dashboard', 'settings', 'activate'];
 
 export interface AuthUser {
   id: string;
@@ -12,6 +12,8 @@ export interface AuthUser {
   groupName?: string;
   allowedTabs: string[];
   proxyUrl?: string;
+  activationExpiresAt?: string | null;
+  activationActive?: boolean;
 }
 
 interface AuthContextValue {
@@ -49,7 +51,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           groupId: data.groupId,
           groupName: data.groupName,
           allowedTabs: Array.isArray(data.allowedTabs) && data.allowedTabs.length > 0 ? data.allowedTabs : DEFAULT_ALLOWED_TABS,
-          proxyUrl: data.proxyUrl
+          proxyUrl: data.proxyUrl,
+          activationExpiresAt: data.activationExpiresAt ?? null,
+          activationActive: !!data.activationActive
         });
         setToken(t);
       } else {
@@ -87,7 +91,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           groupId: data.user.groupId,
           groupName: data.user.groupName,
           allowedTabs: Array.isArray(data.user.allowedTabs) && data.user.allowedTabs.length > 0 ? data.user.allowedTabs : DEFAULT_ALLOWED_TABS,
-          proxyUrl: data.user.proxyUrl
+          proxyUrl: data.user.proxyUrl,
+          activationExpiresAt: data.user.activationExpiresAt ?? null,
+          activationActive: !!data.user.activationActive
         });
         return { ok: true };
       }
@@ -114,7 +120,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           groupId: data.user.groupId,
           groupName: data.user.groupName,
           allowedTabs: Array.isArray(data.user.allowedTabs) && data.user.allowedTabs.length > 0 ? data.user.allowedTabs : DEFAULT_ALLOWED_TABS,
-          proxyUrl: data.user.proxyUrl
+          proxyUrl: data.user.proxyUrl,
+          activationExpiresAt: data.user.activationExpiresAt ?? null,
+          activationActive: !!data.user.activationActive
         });
         return { ok: true };
       }
