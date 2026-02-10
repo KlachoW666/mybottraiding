@@ -142,10 +142,10 @@ export default function App() {
   const { user, loading, logout } = useAuth();
   const allowedSet = useMemo(() => {
     const tabs = user?.allowedTabs ?? [];
-    const set = new Set(tabs.length > 0 ? tabs : FALLBACK_TABS);
-    set.add('privacy');
-    set.add('terms');
-    set.add('profile');
+    const set = new Set<Page>(tabs.length > 0 ? (tabs as Page[]) : FALLBACK_TABS);
+    set.add('privacy' as Page);
+    set.add('terms' as Page);
+    set.add('profile' as Page);
     return set;
   }, [user?.allowedTabs]);
   const PAGES = useMemo(() => {
